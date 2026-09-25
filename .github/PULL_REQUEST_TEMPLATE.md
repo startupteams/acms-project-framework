@@ -1,16 +1,16 @@
 ## Scope
 
 **Feature:** <name>  
-**Requirements:** `REQ-___`  
-**Issue/Ticket:** <ID/link>
+**Requirements:** `ACMS-REQ-___`  
+**Issue/Ticket:** <ID/link if available>
 
 ## What Changed
 
-<Concise summary of the implementation and why it satisfies the approved requirement.>
+<Concise summary of implementation and why it satisfies approved scope.>
 
 ## Acceptance Criteria
 
-- [ ] <criterion / REQ reference>
+- [ ] <criterion / requirement reference>
 
 ## Validation
 
@@ -22,22 +22,29 @@
 
 ## Architecture / Debt / Future Work
 
-- [ ] No significant architecture decision was introduced, **or** relevant ADR(s) are linked below.
-- [ ] No intentional technical debt was introduced, **or** relevant TDR(s) are linked below.
-- [ ] Out-of-scope ideas discovered during implementation were added to `FUTURE_WORK.md` rather than silently implemented.
+- [ ] No new significant architecture decision, or ADR(s) linked below.
+- [ ] No intentional technical debt, or TDR(s) linked below.
+- [ ] Out-of-scope discoveries were added to `FUTURE_WORK.md` rather than implemented silently.
 
 **ADR(s):** None / <links>  
 **TDR(s):** None / <links>  
 **Future work:** None / <FW IDs>
 
+## Security / Governance
+
+- [ ] Work remains inside approved scope and budget.
+- [ ] Protected context was not changed without authority.
+- [ ] No secrets/customer-sensitive data were committed.
+- [ ] Mandatory gated actions received required human approval.
+
 ## Risk and Reviewer Focus
 
-<Known risks, limitations, security implications, migration concerns, or specific areas the human reviewer should inspect.>
+<Known risks, security implications, migration concerns, or reviewer focus areas.>
 
 ## Agent Handoff
 
 - [ ] Diff is focused on approved scope.
-- [ ] Relevant documentation was updated.
-- [ ] Validation results above are accurate, including anything not run.
-- [ ] Failed checks or unresolved questions are explicitly disclosed.
+- [ ] Documentation is updated.
+- [ ] Validation results are accurate.
+- [ ] Failures/unresolved questions are disclosed.
 - [ ] Human approval is required before merge.
