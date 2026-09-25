@@ -16,3 +16,8 @@ Thumbs.db
 .tmp/
 tmp/
 .cache/
+
+__pycache__/
+*.py[cod]
+.venv*/
+*.db
