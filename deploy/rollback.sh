@@ -71,11 +71,10 @@ if [ "$IN_FLIGHT" -eq 1 ]; then
   FAILED_SHA="$CURRENT_SHA"
   FAILED_REV="$CURRENT_REV"
 
-  # Level 2 sequence (plan §8):
+  # Level 2 sequence (plan §8): app stays STOPPED for the whole restore —
+  # never serve writes during a database restore.
   "${COMPOSE[@]}" stop acms-app >/dev/null 2>&1 || true
-  info "terminating active ACMS database connections"
-  "${COMPOSE[@]}" exec -T postgres psql -U acms -d acms \
-    -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='acms' AND pid <> pg_backend_pid()" >/dev/null
+  info "app stopped; terminating active ACMS database connections"
   info "recreating ACMS database from pre-deploy backup"
   "${COMPOSE[@]}" exec -T postgres psql -U acms -d postgres \
     -c "DROP DATABASE IF EXISTS acms_restore_tmp" >/dev/null
@@ -103,12 +102,12 @@ if [ "$IN_FLIGHT" -eq 1 ]; then
   PREV_TAG="$(printf '%s' "$PREV_SHA" | cut -c1-7)"
   if image_exists "acms-app:$PREV_TAG"; then
     info "starting previous image acms-app:$PREV_TAG"
-    ACMS_APP_IMAGE_TAG="$PREV_TAG" "${COMPOSE[@]}" up -d acms-app
   else
     info "previous image missing — rebuilding from sha $PREV_SHA"
     PREV_TAG="$(build_release_image "$PREV_SHA")"
-    ACMS_APP_IMAGE_TAG="$PREV_TAG" "${COMPOSE[@]}" up -d acms-app
   fi
+  ACMS_APP_IMAGE_TAG="$PREV_TAG" "${COMPOSE[@]}" up -d acms-app
+  wait_app_ready
 
   maintenance_off
   RESTORED_REV="$(db_alembic_revision || true)"

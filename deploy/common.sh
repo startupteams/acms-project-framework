@@ -26,7 +26,7 @@ ACMS_REQUIRE_SECRETS="${ACMS_REQUIRE_SECRETS:-ACMS_ADMIN_TOKEN ACMS_POSTGRES_PAS
 COMPOSE=(docker compose -f "$COMMON_DIR/compose.yaml" --env-file "$ACMS_ENV_FILE")
 
 NGINX_CONF="$COMMON_DIR/reverse-proxy/nginx.conf"
-NGINX_MAINT_CONF="$COMMON_DIR/reverse-proxy/nginx.maintenance.conf"
+NGINX_MAINT_CONF="$COMMON_DIR/reverse-proxy/nginx.maintenance.conf.template"
 NGINX_SAVED_CONF="$ACMS_RELEASES_DIR/nginx.conf.pre-maintenance"
 
 # ---------- logging ----------
@@ -111,8 +111,21 @@ app_restart_count() {
 }
 
 app_log_error_scan() { # non-zero if repeated exceptions in recent app logs
-  "${COMPOSE[@]}" logs --tail 100 acms-app 2>&1 | \
-    grep -cE "Traceback|SQLException|OperationalError" | grep -q '^0$'
+  # Live-drill lesson (2026-09-26): grep -c exits 1 when the count is 0, and
+  # pipefail would mark that "failure" — capture the count explicitly instead.
+  local count
+  count="$("${COMPOSE[@]}" logs --tail 100 acms-app 2>&1 | grep -cE "Traceback|SQLException|OperationalError" || true)"
+  [ "${count:-0}" -eq 0 ]
+}
+
+wait_app_ready() { # block until /health passes direct (default 60s), else die
+  local waited=0 deadline="${ACMS_APP_READY_SECONDS:-60}"
+  until app_container_direct_health; do
+    waited=$((waited + 2))
+    [ "$waited" -ge "$deadline" ] && die "acms-app not healthy after ${deadline}s (live-drill lesson: validate only after readiness)"
+    sleep 2
+  done
+  info "acms-app ready (waited ${waited}s)"
 }
 
 app_container_direct_get() { # <path> -> body of GET http://127.0.0.1:8000<path>
@@ -122,13 +135,18 @@ app_container_direct_get() { # <path> -> body of GET http://127.0.0.1:8000<path>
 
 # ---------- image build with build identity ----------
 build_release_image() { # <git-sha-full> -> tags acms-app:<short-sha>
+  # Live-drill lesson (2026-09-26): never command-substitute `compose build` —
+  # its stdout is the build log and pollutes the tag. The tag is computed
+  # here; the build only needs to succeed and leave the image behind.
   local sha="$1" short build_time
   short="$(printf '%s' "$sha" | cut -c1-7)"
   build_time="$(utc_now_iso)"
   info "Building image acms-app:$short (git sha $sha)"
-  ACMS_BUILD_GIT_SHA="$sha" ACMS_BUILD_TIME="$build_time" ACMS_APP_IMAGE_TAG="$short" \
-    "${COMPOSE[@]}" build acms-app
-  docker image inspect "acms-app:$short" >/dev/null 2>&1 || die "image acms-app:$short missing after build"
+  if ! ACMS_BUILD_GIT_SHA="$sha" ACMS_BUILD_TIME="$build_time" ACMS_APP_IMAGE_TAG="$short" \
+    "${COMPOSE[@]}" build acms-app >&2; then
+    die "image build failed for acms-app:$short"
+  fi
+  image_exists "acms-app:$short" || die "image acms-app:$short missing after build"
   printf '%s' "$short"
 }
 
@@ -180,9 +198,25 @@ prune_old_backups() { # keep newest N; never touch current/previous release back
 }
 
 # ---------- maintenance mode (plan §6) ----------
-# The maintenance conf is copied OVER the tracked nginx.conf and nginx is
-# HUP-reloaded; the app container is stopped. Checkout hygiene: the tracked
-# file is restored before any git checkout, then maintenance re-applied.
+# The maintenance template is copied OVER the tracked nginx.conf (same inode —
+# directory mount makes the change visible to the running container) and nginx
+# is reloaded. The app container is stopped during the window. Checkout hygiene:
+# the tracked file is restored before any git checkout, then re-applied.
+# Live-drill lesson (2026-09-26): a single-file bind mount pins the inode —
+# never swap the conf via rename under a single-file mount; HUP then serves
+# stale config forever. Reload is always guarded by `nginx -t` first, and the
+# fallback uses `compose restart` (one container) rather than `up -d` (which
+# re-evaluates depends_on and can recreate the app with the wrong image tag).
+nginx_reload() {
+  if ! "${COMPOSE[@]}" exec -T reverse-proxy nginx -t >/dev/null 2>&1; then
+    "${COMPOSE[@]}" exec -T reverse-proxy nginx -t 2>&1 | head -5 >&2 || true
+    die "nginx config test failed — refusing to reload"
+  fi
+  "${COMPOSE[@]}" kill -s HUP reverse-proxy >/dev/null 2>&1 \
+    || "${COMPOSE[@]}" restart reverse-proxy >/dev/null 2>&1 \
+    || die "could not reload reverse-proxy"
+}
+
 maintenance_on() {
   init_release_dirs
   cp "$NGINX_CONF" "$NGINX_SAVED_CONF"
@@ -211,12 +245,6 @@ maintenance_off() {
   rm -f "$NGINX_SAVED_CONF"
   nginx_reload
   info "Maintenance mode OFF (normal proxy path re-enabled)"
-}
-
-nginx_reload() {
-  "${COMPOSE[@]}" kill -s HUP reverse-proxy >/dev/null 2>&1 \
-    || "${COMPOSE[@]}" restart reverse-proxy >/dev/null 2>&1 \
-    || die "could not reload reverse-proxy"
 }
 
 maintenance_active() {

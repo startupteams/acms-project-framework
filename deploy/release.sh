@@ -88,6 +88,7 @@ info "Alembic revision after migration: $NEW_REV"
 
 info "Starting target release acms-app:$IMAGE_TAG"
 ACMS_APP_IMAGE_TAG="$IMAGE_TAG" "${COMPOSE[@]}" up -d acms-app
+wait_app_ready
 
 # ---------------------------------------------------------------- Phase D
 info "=== Phase D — validate release ==="
@@ -98,6 +99,11 @@ fi
 
 # Exit maintenance; Stage 2 (full) exercises the real HTTPS proxy path.
 maintenance_off
+# Reconcile the proxy with the target compose spec (e.g. one-time transition to
+# the directory mount). `up -d` recreates it only when the spec actually
+# differs; acms-app (depends_on) is untouched — recreated only if ITS spec
+# changed, which the wait_app_ready + validation below would then catch.
+ACMS_APP_IMAGE_TAG="$IMAGE_TAG" "${COMPOSE[@]}" up -d reverse-proxy
 if ACMS_APP_IMAGE_TAG="$IMAGE_TAG" "$DEPLOY_DIR/validate-release.sh" --stage full --strict-build; then
   record_release "$RELEASE_ID" "accepted" "$COMMIT" "$IMAGE_TAG" "$OLD_REV" "$NEW_REV" \
     "$BACKUP_PATH" "$BACKUP_SHA256" "$BACKUP_BYTES"
