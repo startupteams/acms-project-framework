@@ -43,6 +43,33 @@ Priority:
 - **2:** future capability needed for some features.
 - **1:** low-priority/extra future capability.
 
+## Development setup
+
+Backend stack (ADR-0007): Python 3.12+, FastAPI, SQLAlchemy 2.x async, PostgreSQL (`asyncpg`), Alembic.
+
+```bash
+python3.12 -m venv .venv && source .venv/bin/activate
+pip install -e '.[dev]'
+
+# PostgreSQL: either Docker Compose...
+export ACMS_POSTGRES_PASSWORD='<set a local dev password>'
+docker compose up -d postgres
+# ...or, with no Docker/root, an embedded PostgreSQL 16 (dev fallback):
+#   python -m pgserver init /tmp/acms-pgdata && python -m pgserver start /tmp/acms-pgdata
+
+cp .env.example .env   # set ACMS_ADMIN_TOKEN and ACMS_DATABASE_URL
+alembic upgrade head   # Alembic owns schema; the app never creates tables
+uvicorn acms.main:app --reload
+```
+
+`ACMS_DATABASE_URL` accepts plain `postgresql://` URLs (auto-normalized to `postgresql+asyncpg://`). SQLite unit tests use `aiosqlite`; PostgreSQL integration tests skip cleanly when no server is available (or set `ACMS_TEST_POSTGRES_URL`).
+
+Full PostgreSQL stack validation (clean database → Alembic → running app → register/re-register/list → durability after process exit):
+
+```bash
+python scripts/validate_postgres_stack.py
+```
+
 ## Workflow
 
 ```mermaid
