@@ -2,6 +2,7 @@ from fastapi import Depends, FastAPI, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from . import __version__
+from .build_info import as_dict as build_identity
 from .db import get_session
 from .models import AgentRegistrationRequest, AgentResponse
 from .registry import list_agents, register_agent
@@ -22,7 +23,7 @@ async def health() -> dict[str, str]:
 
 @app.get("/version")
 async def version() -> dict[str, str]:
-    return {"version": __version__}
+    return build_identity()
 
 
 @app.post("/api/v1/agents/register", response_model=AgentResponse)

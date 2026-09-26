@@ -1,11 +1,18 @@
 # ACMS production application image (plan §9).
 # Runtime only: Alembic owns schema and migrations run explicitly before start
-# (deploy.sh / update.sh) — the app never creates or alters tables.
+# (release.sh / update.sh) — the app never creates or alters tables.
 FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
+
+# Build identity (feature-delivery plan §4): the running process must always
+# report exactly what it is. git_sha_short is the authoritative identity.
+ARG ACMS_BUILD_GIT_SHA=unknown
+ARG ACMS_BUILD_TIME=unknown
+ENV ACMS_BUILD_GIT_SHA=${ACMS_BUILD_GIT_SHA} \
+    ACMS_BUILD_TIME=${ACMS_BUILD_TIME}
 
 WORKDIR /app
 

@@ -175,3 +175,35 @@ Add Administrator action buttons (e.g. deregister agent, rotate token) to the UI
 
 - Requires ACMS-REQ-025 audit backend.
 - Observer/Worker must never see privileged controls.
+
+## FW-015 - Feature-flag mechanism for risky agent-control features
+
+**Proposed requirement:** ACMS-REQ-FUTURE-015
+**Sprint Priority:** 2
+**Provenance:** Human-Directed (feature-delivery plan §25)
+
+Add a simple environment/config-backed feature-flag mechanism before risky
+agent-control features (e.g. `ACMS_FEATURE_WORK_UI`, `ACMS_FEATURE_A2A_CONTROL`,
+`ACMS_FEATURE_HEARTBEAT`). Flags are a quick disable mechanism, not a
+substitute for rollback.
+
+**Dependencies / guardrails**
+
+- Land before A2A control (slice 4) and heartbeat (slice 3) features.
+- Flags must fail closed (absent → disabled) and never gate authn/authz.
+
+## FW-016 - Maintenance-window reconciliation and stale-release alarms
+
+**Proposed requirement:** ACMS-REQ-FUTURE-016
+**Sprint Priority:** 3
+**Provenance:** Agent-Discovered
+
+If a release transaction aborts between maintenance-on and maintenance-off
+(e.g. power loss), ACMS stays in maintenance mode with the app stopped. A
+watchdog should alert and offer deterministic recovery: if `transaction.json`
+is open, resume or roll back automatically; if stale, exit maintenance mode.
+
+**Dependencies / guardrails**
+
+- Requires ADR-0009 release tooling (this PR) deployed first.
+- Never auto-restore a DB without the transaction guards (plan §29).
