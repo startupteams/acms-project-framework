@@ -135,18 +135,23 @@ app_container_direct_get() { # <path> -> body of GET http://127.0.0.1:8000<path>
 
 # ---------- image build with build identity ----------
 build_release_image() { # <git-sha-full> -> tags acms-app:<short-sha>
-  # Live-drill lesson (2026-09-26): never command-substitute `compose build` —
-  # its stdout is the build log and pollutes the tag. The tag is computed
-  # here; the build only needs to succeed and leave the image behind.
+  # Drill lessons (2026-09-26 x2): NOTHING on stdout but the tag. compose
+  # build goes to stderr, and so does every log line of this function —
+  # command substitution captures stdout verbatim and any stray line
+  # (including our own info()) pollutes the image tag.
   local sha="$1" short build_time
   short="$(printf '%s' "$sha" | cut -c1-7)"
   build_time="$(utc_now_iso)"
-  info "Building image acms-app:$short (git sha $sha)"
+  info "Building image acms-app:$short (git sha $sha)" >&2
   if ! ACMS_BUILD_GIT_SHA="$sha" ACMS_BUILD_TIME="$build_time" ACMS_APP_IMAGE_TAG="$short" \
     "${COMPOSE[@]}" build acms-app >&2; then
-    die "image build failed for acms-app:$short"
+    error "image build failed for acms-app:$short" >&2
+    return 1
   fi
-  image_exists "acms-app:$short" || die "image acms-app:$short missing after build"
+  if ! image_exists "acms-app:$short"; then
+    error "image acms-app:$short missing after build" >&2
+    return 1
+  fi
   printf '%s' "$short"
 }
 
