@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+{% block title %}ACMS Work{% endblock %}
+{% block content %}
+<h1>Work items</h1>
+
+<section class="cards">
+  <div class="card">
+    <h2>Total</h2>
+    <p class="big">{{ items|length }}</p>
+  </div>
+  <div class="card">
+    <h2>Active</h2>
+    <p class="big">{{ items | selectattr('status', 'equalto', 'active') | list | length }}</p>
+  </div>
+  <div class="card">
+    <h2>Planned</h2>
+    <p class="big">{{ items | selectattr('status', 'equalto', 'planned') | list | length }}</p>
+  </div>
+  <div class="card">
+    <h2>Completed</h2>
+    <p class="big">{{ items | selectattr('status', 'equalto', 'completed') | list | length }}</p>
+  </div>
+</section>
+
+{% if user.role == 'administrator' %}
+<section class="panel">
+  <a class="button" href="/ui/work/new">+ New work item</a>
+</section>
+{% endif %}
+
+{% if error %}
+<section class="notice warn"><p>{{ error }}</p></section>
+{% endif %}
+
+<section class="panel">
+  <h2>Filters</h2>
+  <form method="get" action="/ui/work" class="filter-form">
+    <label>Status
+      <select name="status_filter">
+        <option value="">all</option>
+        {% for s in statuses %}
+        <option value="{{ s }}" {% if status_filter == s %}selected{% endif %}>{{ s }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Kind
+      <select name="kind_filter">
+        <option value="">all</option>
+        {% for k in kinds %}
+        <option value="{{ k }}" {% if kind_filter == k %}selected{% endif %}>{{ k }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <button type="submit">Apply</button>
+    <a class="muted" href="/ui/work">clear</a>
+  </form>
+</section>
+
+{% if items %}
+<table class="data">
+  <thead>
+    <tr><th>Title</th><th>Kind</th><th>Status</th><th>Parent</th><th>Created by</th><th>Updated</th></tr>
+  </thead>
+  <tbody>
+    {% for i in items %}
+    <tr>
+      <td><a href="/ui/work/{{ i.work_item_id }}">{{ i.title }}</a></td>
+      <td><span class="{{ 'badge badge-' ~ i.kind }}">{{ i.kind }}</span></td>
+      <td><span class="status status-{{ i.status }}">{{ i.status }}</span></td>
+      <td>{{ i.parent_title or "—" }}</td>
+      <td>{{ i.created_by }}</td>
+      <td class="muted">{{ i.updated_at.strftime('%Y-%m-%d %H:%M') if i.updated_at else '—' }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="muted">No work items match the current filters.</p>
+{% endif %}
+{% endblock %}

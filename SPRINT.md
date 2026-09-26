@@ -31,12 +31,12 @@ live deployment on MIAM-00135 CT122, 2026-09-26.)
 **Branch:** `feat/ACMS-007-work-management-ui`
 **Plan:** feature-delivery plan §13
 
-- [ ] `Home / Agents / Work / System` navigation
-- [ ] `/ui/work`: list/filter/create/edit Work Items; hierarchy; scope view
-- [ ] Primary-assignment actions (assign/close/release/suspend) — Administrator
-- [ ] Assignment status distinct: Recorded / Delivered / Accepted (no A2A yet)
-- [ ] Role authorization: admin mutate, worker read permitted work, observer read-only
-- [ ] Execution tasks / handoffs / background routines visible per work item
+- [x] `Home / Agents / Work / System` navigation
+- [x] `/ui/work`: list/filter/create/edit Work Items; hierarchy; scope view
+- [x] Primary-assignment actions (assign/close/release/suspend) — Administrator
+- [x] Assignment status distinct: Recorded / Delivered / Accepted (no A2A yet)
+- [x] Role authorization: admin mutate, worker read permitted work, observer read-only
+- [x] Execution tasks / handoffs / background routines visible per work item
 
 ### 3. Agent Detail + background routines (feature slice 2)
 

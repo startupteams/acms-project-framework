@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %}New work item — ACMS{% endblock %}
+{% block content %}
+<h1>New work item</h1>
+
+{% if error %}
+<section class="notice warn"><p>{{ error }}</p></section>
+{% endif %}
+
+<section class="panel">
+  <form method="post" action="/ui/work/new" class="stacked-form">
+    <label>Kind
+      <select name="kind">
+        {% for k in kinds %}
+        <option value="{{ k }}">{{ k }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Parent (optional)
+      <select name="parent_id">
+        <option value="">— none (top level) —</option>
+        {% for p in parents %}
+        <option value="{{ p.work_item_id }}">{{ p.title }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Title <input name="title" required maxlength="255"></label>
+    <label>Scope (Markdown) <textarea name="scope_markdown" rows="10" placeholder="Approved scope, acceptance criteria, links…"></textarea></label>
+    <button type="submit">Create work item</button>
+  </form>
+</section>
+{% endblock %}
