@@ -12,7 +12,8 @@ Authorized Browser ──HTTPS──> reverse-proxy ──> acms-app ──> pos
 
 | Path | Purpose |
 |---|---|
-| `/opt/acms` | Git checkout of approved `main` (production only, never dev work) |
+| `/opt/acms/repo` | Git checkout of approved `main` (production only, never dev work) |
+| `/opt/acms/releases/` | Release state: ledger, metadata, pre-deploy DB backups |
 | `/opt/acms/.env` | Secrets, `0600` (never committed; see `.env.production.example`) |
 | `/opt/acms/tls/acms.crt` | TLS full chain (internal CA) |
 | `/opt/acms/tls/acms.key` | TLS private key, `0600` |
@@ -60,39 +61,67 @@ docker compose -f deploy/compose.yaml --env-file /opt/acms/.env \
   exec postgres psql -U acms -d acms -tAc 'SELECT version_num FROM alembic_version'
 ```
 
-## Deploy / update flow (plan §17)
+## Safe release transaction (feature-delivery plan §7)
 
 ```bash
-deploy/update.sh              # update to origin/main HEAD
-deploy/update.sh <sha>        # update to a specific approved commit
+deploy/release.sh              # release to origin/main HEAD (approved commit)
+deploy/release.sh <sha>        # release to a specific approved main commit
 ```
 
-`update.sh` records the previous commit, fetches `origin/main`, refuses any
-commit that is not an ancestor of `origin/main`, checks out the target,
-rebuilds, migrates, restarts, health-checks, and prints both commits.
-Continuous/automatic deployment is intentionally not used.
+`release.sh` runs the full transaction: preflight → maintenance window →
+verified pre-deploy PostgreSQL backup → SHA-tagged image build → alembic
+upgrade → two-stage validation (direct + proxy) → accept, or **automatic
+rollback** to the exact previous known-good release if any validation fails.
+Deployment remains human-gated (plan §3); rollback on failed validation is
+pre-authorized as a safety action.
 
-## Rollback (plan §18)
+Release state lives outside Git at `/opt/acms/releases/`:
 
-1. `git -C /opt/acms rev-parse HEAD` — confirm the currently deployed commit.
-2. Identify the previous known-good commit (`git log --oneline -n 10`).
-3. `deploy/update.sh <previous-sha>` — migrations on this system so far are
-   additive; rolling the app back to an older commit is expected to be safe.
-4. **Never** run destructive `alembic downgrade` without human direction. If a
-   future migration is not backward-compatible, stop and involve a human.
+```text
+/opt/acms/releases/
+├── current            # release id of the accepted release
+├── previous           # release id of the previous known-good release
+├── history.jsonl      # append-only release/rollback ledger
+├── releases/<id>.json # full release metadata (§4 fields, no secrets)
+├── transaction.json   # open release transaction (guards Level-2 rollback)
+└── backups/<id>.dump  # pre-deploy pg_dump -Fc, SHA-256 recorded
+```
 
-## Smoke test (plan §14)
+## Rollback (feature-delivery plan §8/§9)
 
 ```bash
-deploy/smoke-test.sh                       # against https://acms.miam.home.arpa
-deploy/smoke-test.sh https://<vm-ip>       # against the VM IP (TLS SNI caveat)
+deploy/rollback.sh             # to the immediately previous known-good release
+deploy/rollback.sh <release-id>
 ```
 
-Checks: `/health`, `/version`, unauthenticated API denial, HTTPS login page,
-HTTP→HTTPS redirect, UI redirect for unauthenticated browsers, and that the
-registry API is not exposed through the proxy. Full human checks (LLDAP login
-per role, browser trust of the internal CA, reboot persistence) are listed in
-the PR description and the deployment handoff.
+The script chooses the lowest reliable level:
+
+| Level | When | Action |
+|---|---|---|
+| 0 | transient failure, same code/schema | restart container, re-validate |
+| 1 | broken app, schema compatible | previous image/SHA, **no downgrade** |
+| 2 | migration ran / state suspicious | app rollback **+ verified DB restore** (guarded) |
+| 3 | VM/PBS disaster recovery | restore whole VM from PBS (manual, see below) |
+
+Guards (plan §29): Level-2 DB restore only runs inside an open release
+transaction (i.e. validation failed mid-release), with a checksum-verified
+backup; standalone rollback is application-only and never touches the
+database. The script refuses unknown releases, never blind-downgrades Alembic,
+and never hides a failed rollback — if a guard fails it stops and requests
+human direction.
+
+If a released build shows a severe regression, a human can simply instruct:
+`rollback ACMS`.
+
+## Disaster recovery layer (plan §30)
+
+- Git — source history and previous application versions.
+- Pre-deploy PostgreSQL dumps — fast deterministic app+DB rollback.
+- PBS (`marion-pbs-daily-all`, 03:05) — whole-VM disaster recovery. Restore VM
+  from PBS → `deploy/smoke-test.sh` → verify registry rows via `/ui/agents`
+  (or `SELECT count(*) FROM agents`).
+
+No single layer substitutes the others.
 
 ## Backup (plan §15)
 

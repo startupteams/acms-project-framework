@@ -1,61 +1,83 @@
-# Current Sprint - ACMS Foundation
+# Current Sprint — ACMS useful for human work management + safe releases
 
 ## Sprint Goal
 
-Establish the first executable ACMS control-plane scaffold and prove the registry/Agent Bridge/A2A foundation without expanding into dashboard, external gateway, or advanced orchestration work.
+Make the live ACMS useful for human work management while establishing a
+deterministic, AI-agent-executable rollback mechanism.
+
+(Replaces the foundation sprint, which completed through PR #4 and the first
+live deployment on MIAM-00135 CT122, 2026-09-26.)
 
 ## Features in Scope
 
-### Control-plane scaffold
+### 1. Safe release / rollback tooling (PR 0 — infrastructure)
 
-**Requirements**
+**Branch:** `ops/ACMS-safe-release-rollback`
+**Plan:** feature-delivery plan 2026-09-26 §3–§12, §24, §28–§30
 
-- `ACMS-REQ-001`
-- `ACMS-REQ-003`
-- `ACMS-REQ-004`
-- `ACMS-REQ-031`
-- `ACMS-REQ-038`
-- `ACMS-REQ-039`
+- [ ] Pre-deploy verified PostgreSQL backup (plan §5)
+- [ ] Maintenance window during release transactions (plan §6)
+- [ ] Safe release transaction `deploy/release.sh` (plan §7)
+- [ ] Deterministic rollback `deploy/rollback.sh` Levels 0/1/2 + guards (plan §8/§9)
+- [ ] Automated rollback on failed validation (plan §10)
+- [ ] Two-stage post-deploy validation (plan §11)
+- [ ] Build identity: `/version` + System UI expose Git SHA/build time (plan §4)
+- [ ] Release records outside Git (`/opt/acms/releases/`) (plan §4)
+- [ ] SHA-tagged images (`acms-app:<git-sha-short>`)
+- [ ] ADR-0009 (Proposed)
 
-**Work items**
+### 2. Work Management UI (feature slice 1)
 
-- [ ] Create Proposed ADR for MVP implementation stack and authentication mechanism.
-- [ ] Create backend service skeleton.
-- [ ] Add health/readiness/version endpoints.
-- [ ] Define initial persistent agent registry model.
-- [ ] Define A2A Agent Card/capability adapter model.
-- [ ] Add minimal authenticated registration/control boundary.
-- [ ] Add deterministic tests and documented setup/run/test commands.
-- [ ] Create sprint handoff.
-- [ ] Open PR for human verification; do not merge autonomously.
+**Branch:** `feat/ACMS-007-work-management-ui`
+**Plan:** feature-delivery plan §13
+
+- [ ] `Home / Agents / Work / System` navigation
+- [ ] `/ui/work`: list/filter/create/edit Work Items; hierarchy; scope view
+- [ ] Primary-assignment actions (assign/close/release/suspend) — Administrator
+- [ ] Assignment status distinct: Recorded / Delivered / Accepted (no A2A yet)
+- [ ] Role authorization: admin mutate, worker read permitted work, observer read-only
+- [ ] Execution tasks / handoffs / background routines visible per work item
+
+### 3. Agent Detail + background routines (feature slice 2)
+
+**Branch:** `feat/ACMS-014-agent-detail-routines`
+**Plan:** feature-delivery plan §14
+
+- [ ] `/ui/agents/{agent_id}`: identity, trust class, harness, capability manifest
+- [ ] Assignment/execution-task history, handoffs, background routines inventory
+
+### 4. Live deployment after human approval
+
+- [ ] Merge PR 0 after human review
+- [ ] Human authorizes deployment of the safe-release tooling to CT122
+- [ ] Deploy via the new release transaction; verify rollback tooling on the live box
+- [ ] Document exact live SHA + release records
 
 ## Explicitly out of scope for this sprint
 
-- Full dashboard UI.
-- External Agent Gateway implementation.
-- Semantic/vector context retrieval.
-- Cost integration.
-- Production deployment.
-- Agent instantiation.
-- Managing vLLM/model servers.
-- gRPC or multiple A2A transport bindings.
-- Internal event bus.
+- A2A delivery/steering control (slice 4) unless the above complete cleanly.
+- Heartbeat/liveness (slice 3), live events (slice 5), audit/attention (slice 6).
+- React/Next.js UI replacement (ADR-0008 stays; plan §22).
+- Cost/performance integration (slice 9; needs LLM Manager metric contracts).
 
 ## Definition of Done
 
-- [ ] Proposed stack/auth ADR is visible to human reviewer.
-- [ ] In-scope acceptance criteria are satisfied or explicitly deferred by human decision.
-- [ ] Tests/checks pass.
-- [ ] README contains exact local setup/run/test commands.
-- [ ] No secrets are committed.
-- [ ] Documentation affected by the scaffold is updated.
-- [ ] Pull request clearly states validation, risks, and reviewer focus.
-- [ ] Human reviewer approves before merge.
+- [ ] Requirement IDs traced for every PR (`ACMS-REQ-###`).
+- [ ] Tests/checks pass, including migration-compatibility validation where schema changes.
+- [ ] No secrets committed; release records stay outside Git.
+- [ ] Markdown handoff per PR with live smoke results where deployed.
+- [ ] Human review before every merge; agents do not self-merge.
+- [ ] Deployment only after explicit human authorization; failed-validation
+      rollbacks are pre-authorized (plan §3).
 
 ## Risks / Blockers / Human Decisions Needed
 
-- Human must approve the concrete MVP implementation stack and authentication mechanism in the first feature PR before merge.
+- ADR-0009 (safe release transaction) needs human acceptance.
+- Level-2 DB restore policy is validated only by review + live drill after
+  deployment authorization (plan §31 recommends verifying the rollback tooling).
+- ADR-0008 UI stays Jinja2 while slices land quickly.
 
 ## Sprint Handoff
 
-At sprint completion, record shipped requirements, validation results, accepted/rejected ADR choices, unresolved work, and recommended next PR.
+Record shipped requirements, validation results, accepted/rejected ADR
+choices, unresolved work, and the recommended next PR at sprint completion.

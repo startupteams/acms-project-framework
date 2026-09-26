@@ -5,6 +5,8 @@
 <table class="data kv">
   <tbody>
     <tr><th>Application version</th><td>{{ version }}</td></tr>
+    <tr><th>Git SHA</th><td><code>{{ git_sha }}</code></td></tr>
+    <tr><th>Build time (UTC)</th><td>{{ build_time }}</td></tr>
     <tr><th>Deployment environment</th><td>{{ environment }}</td></tr>
     <tr><th>Database connectivity</th><td>{{ db_health }}</td></tr>
     <tr><th>Migration revision</th><td>{% if alembic_revision %}<code>{{ alembic_revision }}</code>{% else %}unknown (schema not migrated or unreachable){% endif %}</td></tr>
@@ -13,4 +15,14 @@
     <tr><th>Web sessions configured</th><td>{{ "yes" if session_configured else "no (login disabled)" }}</td></tr>
   </tbody>
 </table>
+<section class="panel">
+  <h2>Release records</h2>
+  <p>Release ledger and pre-deploy database backups live on the ACMS VM, outside the repository:</p>
+  <ul>
+    {% for label, path in deployment_notes.items() %}
+    <li><strong>{{ label }}</strong>: <code>{{ path }}</code></li>
+    {% endfor %}
+  </ul>
+  <p class="muted">A Git SHA is the authoritative deployed code identity (feature-delivery plan §4).</p>
+</section>
 {% endblock %}

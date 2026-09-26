@@ -26,7 +26,10 @@ services:
     build:
       context: ..
       dockerfile: deploy/Dockerfile
-    image: acms-app:local
+      args:
+        ACMS_BUILD_GIT_SHA: ${ACMS_BUILD_GIT_SHA:-unknown}
+        ACMS_BUILD_TIME: ${ACMS_BUILD_TIME:-unknown}
+    image: acms-app:${ACMS_APP_IMAGE_TAG:-local}
     restart: unless-stopped
     environment:
       ACMS_ADMIN_TOKEN: ${ACMS_ADMIN_TOKEN:?set ACMS_ADMIN_TOKEN in /opt/acms/.env}

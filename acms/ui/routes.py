@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.staticfiles import StaticFiles
 
 from .. import __version__
+from ..build_info import as_dict as build_identity
 from ..db import engine, get_session
 from ..registry import list_agents
 from ..settings import get_settings
@@ -36,6 +37,14 @@ from .session_auth import (
 logger = logging.getLogger("acms.ui")
 
 _APP_STARTED_AT = time.time()
+
+# Production release records live outside the repository at /opt/acms/releases
+# (feature-delivery plan §4: no secrets in release metadata; history.jsonl is
+# the release ledger). Linked from the System page so operators can find them.
+DEPLOYMENT_NOTES = {
+    "release_records": "/opt/acms/releases/history.jsonl (on the ACMS VM, root-only)",
+    "release_backups": "/opt/acms/releases/backups/ (pre-deploy PostgreSQL dumps, SHA-256 verified)",
+}
 
 templates_dir = Path(str(resources.files("acms.ui") / "templates"))
 static_dir = Path(str(resources.files("acms.ui") / "static"))
@@ -165,7 +174,9 @@ async def _load_agents(db: AsyncSession):
 
 
 def _base_context(user) -> dict:
-    return {"user": user, "version": __version__}
+    context = {"user": user, "version": __version__}
+    context.update(build_identity())
+    return context
 
 
 @router.get("/")
@@ -213,5 +224,6 @@ async def ui_system(
         "uptime_seconds": int(time.time() - _APP_STARTED_AT),
         "ldap_configured": bool(settings.ldap_url),
         "session_configured": session_configured(),
+        "deployment_notes": DEPLOYMENT_NOTES,
     }
     return templates.TemplateResponse(request, "system.html", context)
