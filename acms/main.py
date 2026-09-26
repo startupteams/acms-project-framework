@@ -6,8 +6,11 @@ from .db import get_session
 from .models import AgentRegistrationRequest, AgentResponse
 from .registry import list_agents, register_agent
 from .security import require_admin_token
+from .ui.routes import install_ui
 
 app = FastAPI(title="AgentifyMe Cloud Management System", version=__version__)
+
+install_ui(app)
 
 
 @app.get("/health")

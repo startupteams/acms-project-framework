@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %}ACMS Home{% endblock %}
+{% block content %}
+<h1>Fleet overview</h1>
+<section class="cards">
+  <div class="card">
+    <h2>ACMS version</h2>
+    <p class="big">{{ version }}</p>
+  </div>
+  <div class="card">
+    <h2>App health</h2>
+    <p class="big ok">{{ app_health }}</p>
+  </div>
+  <div class="card">
+    <h2>Database health</h2>
+    <p class="big {% if db_health == 'ok' %}ok{% else %}warn{% endif %}">{{ db_health }}</p>
+  </div>
+  <div class="card">
+    <h2>Registered agents</h2>
+    <p class="big">{{ agent_count }}</p>
+    <p class="muted">{{ internal_count }} internal &middot; {{ external_count }} external</p>
+  </div>
+</section>
+<section class="panel">
+  <h2>Not yet implemented</h2>
+  <p>The backend does not yet maintain the following fleet fields, so they are not shown here:</p>
+  <ul>
+    {% for item in not_implemented %}<li>{{ item }}</li>{% endfor %}
+  </ul>
+  <p class="muted">These arrive with Work Items, heartbeat/A2A control, and cost integration.</p>
+</section>
+{% endblock %}

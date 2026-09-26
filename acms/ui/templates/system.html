@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block title %}ACMS System{% endblock %}
+{% block content %}
+<h1>System</h1>
+<table class="data kv">
+  <tbody>
+    <tr><th>Application version</th><td>{{ version }}</td></tr>
+    <tr><th>Deployment environment</th><td>{{ environment }}</td></tr>
+    <tr><th>Database connectivity</th><td>{{ db_health }}</td></tr>
+    <tr><th>Migration revision</th><td>{% if alembic_revision %}<code>{{ alembic_revision }}</code>{% else %}unknown (schema not migrated or unreachable){% endif %}</td></tr>
+    <tr><th>Process uptime</th><td>{{ uptime_seconds }}s</td></tr>
+    <tr><th>LDAP configured</th><td>{{ "yes" if ldap_configured else "no" }}</td></tr>
+    <tr><th>Web sessions configured</th><td>{{ "yes" if session_configured else "no (login disabled)" }}</td></tr>
+  </tbody>
+</table>
+{% endblock %}
