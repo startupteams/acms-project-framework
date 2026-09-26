@@ -161,14 +161,29 @@ async def close_assignment(
 
 
 async def list_assignments(
-    db: AsyncSession, agent_id: str | None = None, status: str | None = None
+    db: AsyncSession,
+    agent_id: str | None = None,
+    status: str | None = None,
+    work_item_id: str | None = None,
 ) -> list[AssignmentRecord]:
     stmt = select(AssignmentRecord).order_by(AssignmentRecord.assigned_at)
     if agent_id is not None:
         stmt = stmt.where(AssignmentRecord.agent_id == agent_id)
     if status is not None:
         stmt = stmt.where(AssignmentRecord.status == status)
+    if work_item_id is not None:
+        stmt = stmt.where(AssignmentRecord.work_item_id == work_item_id)
     result = await db.scalars(stmt)
+    return list(result.all())
+
+
+async def list_children(db: AsyncSession, parent_id: str) -> list[WorkItemRecord]:
+    """Direct children of a work item (ACMS-REQ-007 hierarchy)."""
+    result = await db.scalars(
+        select(WorkItemRecord)
+        .where(WorkItemRecord.parent_id == parent_id)
+        .order_by(WorkItemRecord.created_at)
+    )
     return list(result.all())
 
 

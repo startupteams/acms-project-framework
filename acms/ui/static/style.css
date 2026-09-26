@@ -76,3 +76,54 @@ code { background: rgba(255,255,255,0.06); padding: 0.1rem 0.35rem; border-radiu
   .topbar { flex-wrap: wrap; }
   table.data { display: block; overflow-x: auto; }
 }
+
+/* ---- Work UI (feature slice 1, ACMS-REQ-007/008/013/014/036) ---- */
+.badge { padding: 0.1rem 0.5rem; border-radius: 999px; font-size: 0.75rem; border: 1px solid var(--border); }
+.badge-product { color: #b085f5; }
+.badge-project { color: var(--accent); }
+.badge-feature { color: var(--ok); }
+.badge-task { color: var(--muted); }
+.status { font-weight: 600; }
+.status-planned { color: var(--muted); }
+.status-active { color: var(--ok); }
+.status-blocked { color: var(--warn); }
+.status-in_review { color: var(--accent); }
+.status-completed { color: var(--ok); }
+.status-cancelled { color: var(--muted); }
+.status-succeeded { color: var(--ok); }
+.status-failed { color: var(--warn); }
+.status-running { color: var(--accent); }
+.status-active_assig { color: var(--ok); }
+.stacked-form { display: flex; flex-direction: column; gap: 0.6rem; max-width: 640px; }
+.stacked-form label { display: flex; flex-direction: column; gap: 0.25rem; font-size: 0.85rem; color: var(--muted); }
+.stacked-form input, .stacked-form select, .stacked-form textarea {
+  background: var(--bg); color: var(--text); border: 1px solid var(--border);
+  border-radius: 6px; padding: 0.5rem 0.7rem; font-size: 0.95rem; font-family: inherit;
+}
+.stacked-form textarea { font-family: ui-monospace, monospace; }
+.stacked-form button {
+  margin-top: 0.3rem; align-self: flex-start; background: var(--accent); color: #002247;
+  font-weight: 600; border: none; border-radius: 6px; padding: 0.55rem 1rem; cursor: pointer;
+}
+.stacked-form button:hover { filter: brightness(1.1); }
+.filter-form { display: flex; gap: 1rem; align-items: end; flex-wrap: wrap; }
+.filter-form label { display: flex; flex-direction: column; gap: 0.25rem; font-size: 0.85rem; color: var(--muted); }
+.filter-form select, .filter-form button {
+  background: var(--bg); color: var(--text); border: 1px solid var(--border);
+  border-radius: 6px; padding: 0.45rem 0.6rem; font-size: 0.9rem;
+}
+.filter-form button { background: var(--accent); color: #002247; font-weight: 600; cursor: pointer; border: none; }
+.inline-form { display: flex; gap: 0.4rem; align-items: center; }
+.inline-form select {
+  background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px;
+  padding: 0.3rem 0.4rem; font-size: 0.8rem;
+}
+.inline-form button {
+  background: var(--accent); color: #002247; font-weight: 600; border: none;
+  border-radius: 6px; padding: 0.35rem 0.7rem; cursor: pointer; font-size: 0.8rem;
+}
+.button { display: inline-block; background: var(--accent); color: #002247; font-weight: 600; border-radius: 6px; padding: 0.5rem 1rem; text-decoration: none; }
+.button:hover { filter: brightness(1.1); }
+.handoff { border-left: 3px solid var(--border); padding-left: 0.8rem; margin-bottom: 0.8rem; }
+.markdown { white-space: pre-wrap; font-size: 0.92rem; }
+pre.markdown { font-family: ui-monospace, monospace; overflow-x: auto; background: var(--bg); border-radius: 6px; padding: 0.6rem; }

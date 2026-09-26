@@ -57,6 +57,9 @@ def install_ui(app) -> None:
     """Attach the UI router and static assets to the FastAPI app."""
     app.mount("/ui/static", StaticFiles(directory=str(static_dir)), name="ui-static")
     app.include_router(router)
+    from .work_routes import router as work_router
+
+    app.include_router(work_router)
 
 
 def _deny_unmapped(request: Request, username: str) -> Response:
