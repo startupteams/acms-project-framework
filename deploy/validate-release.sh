@@ -54,8 +54,9 @@ health_repeats() {
   local i
   for i in 1 2 3; do
     app_container_direct_health || return 1
-    [ "$i" -lt 3 ] && sleep 2
+    if [ "$i" -lt 3 ]; then sleep 2; fi
   done
+  return 0
 }
 check "repeated /health (x3, direct)" health_repeats
 
