@@ -71,9 +71,10 @@ def _authenticate_sync(username: str, password: str) -> LdapAuthResult:
                 return LdapAuthResult(username=username, role=None)
 
             entry = conn.entries[0]
-            attr = entry.attributes.get("memberOf")
-            values = getattr(attr, "values", None)
-            member_of = [str(v) for v in (values if values is not None else (attr or []))]
+            member_of = list(entry.entry_attributes_as_dict.get("memberOf", []))
+            # LLDAP group objects expose membership via both member and uniqueMember.
+            if not member_of:
+                member_of = list(entry.entry_attributes_as_dict.get("member", []))
 
             # Verify the password by rebinding as the found user DN.
             try:
