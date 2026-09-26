@@ -1,7 +1,7 @@
 import json
 
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from .models import AgentCapabilities, AgentRecord, AgentRegistrationRequest, AgentResponse
 
@@ -23,8 +23,8 @@ def _to_response(record: AgentRecord) -> AgentResponse:
     )
 
 
-def register_agent(db: Session, request: AgentRegistrationRequest) -> tuple[AgentResponse, bool]:
-    existing = db.scalar(
+async def register_agent(db: AsyncSession, request: AgentRegistrationRequest) -> tuple[AgentResponse, bool]:
+    existing = await db.scalar(
         select(AgentRecord).where(AgentRecord.external_registration_id == request.external_registration_id)
     )
     now = AgentRecord.now()
@@ -40,8 +40,8 @@ def register_agent(db: Session, request: AgentRegistrationRequest) -> tuple[Agen
         existing.capability_hash = request.capability_hash
         existing.capability_json = capabilities_json
         existing.updated_at = now
-        db.commit()
-        db.refresh(existing)
+        await db.commit()
+        await db.refresh(existing)
         return _to_response(existing), False
 
     record = AgentRecord(
@@ -59,10 +59,11 @@ def register_agent(db: Session, request: AgentRegistrationRequest) -> tuple[Agen
         updated_at=now,
     )
     db.add(record)
-    db.commit()
-    db.refresh(record)
+    await db.commit()
+    await db.refresh(record)
     return _to_response(record), True
 
 
-def list_agents(db: Session) -> list[AgentResponse]:
-    return [_to_response(x) for x in db.scalars(select(AgentRecord).order_by(AgentRecord.created_at)).all()]
+async def list_agents(db: AsyncSession) -> list[AgentResponse]:
+    result = await db.scalars(select(AgentRecord).order_by(AgentRecord.created_at))
+    return [_to_response(x) for x in result.all()]
