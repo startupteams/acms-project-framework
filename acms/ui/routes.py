@@ -58,8 +58,10 @@ def install_ui(app) -> None:
     app.mount("/ui/static", StaticFiles(directory=str(static_dir)), name="ui-static")
     app.include_router(router)
     from .work_routes import router as work_router
+    from .agent_routes import router as agent_router
 
     app.include_router(work_router)
+    app.include_router(agent_router)
 
 
 def _deny_unmapped(request: Request, username: str) -> Response:
@@ -198,7 +200,8 @@ async def ui_home(
         "internal_count": internal,
         "external_count": external,
         # ACMS-REQ-046 partial: these backend fields do not exist yet — never fabricate.
-        "not_implemented": ["primary assignment", "agent status", "last contact", "cost"],
+        # (Primary assignments exist since the Work UI slice; heartbeat/A2A/cost do not.)
+        "not_implemented": ["agent status", "last contact", "cost"],
     }
     return templates.TemplateResponse(request, "home.html", context)
 
