@@ -64,6 +64,28 @@ uvicorn acms.main:app --reload
 
 `ACMS_DATABASE_URL` accepts plain `postgresql://` URLs (auto-normalized to `postgresql+asyncpg://`). SQLite unit tests use `aiosqlite`; PostgreSQL integration tests skip cleanly when no server is available (or set `ACMS_TEST_POSTGRES_URL`).
 
+## Internal web UI (ADR-0008, first live deployment)
+
+The app serves a thin server-rendered UI under `/ui/` (Jinja2, ADR-0008):
+
+- `/ui/login` — LLDAP-backed human login (Administrator / Worker / Observer via configurable group DNs; unmapped users are denied).
+- `/ui/`, `/ui/agents`, `/ui/system` — read views over real backend data only (missing fleet fields are labeled, never fabricated).
+- Session: signed server-side cookie (`HttpOnly`, `SameSite=Lax`, `Secure` under HTTPS); the UI is disabled unless `ACMS_SESSION_SECRET` is set (fail closed).
+- Machine/API traffic keeps the `ACMS_ADMIN_TOKEN` bearer token; it is never shared with the browser.
+
+Local UI dev variables (all optional; UI login stays disabled without `ACMS_SESSION_SECRET` + `ACMS_LDAP_URL`):
+
+```bash
+ACMS_SESSION_SECRET='<random secret>'
+ACMS_LDAP_URL=ldaps://lldap.miam.home.arpa:636
+ACMS_LDAP_USER_BASE=ou=people,dc=miam,dc=home,dc=arpa
+ACMS_LDAP_GROUP_ADMIN='<admin group DN>'
+ACMS_LDAP_GROUP_WORKER='<worker group DN>'
+ACMS_LDAP_GROUP_OBSERVER='<observer group DN>'
+```
+
+First live VM deployment (Docker Compose + nginx HTTPS + operator scripts) is documented in [`deploy/README.md`](deploy/README.md).
+
 Full PostgreSQL stack validation (clean database → Alembic → running app → register/re-register/list → durability after process exit):
 
 ```bash

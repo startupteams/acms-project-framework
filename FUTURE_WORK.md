@@ -145,3 +145,33 @@ Some source platforms build/deploy agents directly. ACMS intentionally delegates
 
 Retain every token/event fragment only if a concrete forensic/compliance need justifies the cost and privacy exposure. MVP retains raw transcripts plus significant semantic events instead.
 
+
+---
+
+## FW-013 - Rich React/Next.js dashboard frontend
+
+**Proposed requirement:** ACMS-REQ-FUTURE-013  
+**Sprint Priority:** 2  
+**Provenance:** Human-Directed (deployment plan §5)
+
+Replace the temporary server-rendered Jinja2 UI (ADR-0008) with a proper SPA frontend consuming the ACMS API, once backend features (assignments, status, heartbeat, cost) make richer views worthwhile.
+
+**Dependencies / guardrails**
+
+- The Jinja2 UI remains the control surface until the SPA reaches parity on read views.
+- The SPA must never handle the machine bearer token; human auth stays LLDAP/session-cookie based.
+
+---
+
+## FW-014 - Privileged UI actions with full authorization rules
+
+**Proposed requirement:** ACMS-REQ-FUTURE-014  
+**Sprint Priority:** 2  
+**Provenance:** Human-Directed (deployment plan §6)
+
+Add Administrator action buttons (e.g. deregister agent, rotate token) to the UI only after backend operations and per-role authorization rules exist, with audit records for each action (ACMS-REQ-025).
+
+**Dependencies / guardrails**
+
+- Requires ACMS-REQ-025 audit backend.
+- Observer/Worker must never see privileged controls.

@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}ACMS{% endblock %}</title>
+  <link rel="stylesheet" href="/ui/static/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/ui/">ACMS</a>
+    {% if user %}
+    <nav>
+      <a href="/ui/">Home</a>
+      <a href="/ui/agents">Agents</a>
+      <a href="/ui/system">System</a>
+    </nav>
+    <div class="session">
+      <span class="who">{{ user.username }}</span>
+      <span class="role role-{{ user.role }}">{{ user.role }}</span>
+      <a href="/ui/logout">Log out</a>
+    </div>
+    {% endif %}
+  </header>
+  <main>
+    {% block content %}{% endblock %}
+  </main>
+  <footer class="footer">
+    <span>ACMS v{{ version }}</span>
+    <span>internal only</span>
+  </footer>
+</body>
+</html>
