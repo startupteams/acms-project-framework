@@ -39,5 +39,7 @@ def test_register_reregister_preserves_acms_identity():
 def test_capabilities_are_explicit():
     agents = client.get("/api/v1/agents", headers=AUTH)
     assert agents.status_code == 200
-    assert agents.json()[0]["capabilities"]["pause"] is False
-    assert agents.json()[0]["capabilities"]["streaming"] is True
+    match = [a for a in agents.json() if a["external_registration_id"] == "miam-00111-hermes-01"]
+    assert match, "registered agent missing from list"
+    assert match[0]["capabilities"]["pause"] is False
+    assert match[0]["capabilities"]["streaming"] is True
