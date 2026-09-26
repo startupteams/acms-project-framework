@@ -60,7 +60,14 @@ services:
       - "80:80"
       - "443:443"
     volumes:
-      - ./reverse-proxy/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      # Directory mount (feature-delivery plan §6 + live-drill lesson 2026-09-26):
+      # a single-file bind mount pins the inode, so swapping the file on disk is
+      # invisible to the container and a HUP reload keeps serving the stale
+      # config. With a directory mount, in-place edits (same inode) are seen
+      # immediately. nginx.maintenance.conf.template is not matched by the
+      # conf.d/*.conf include glob — common.sh copies it over nginx.conf to
+      # activate maintenance mode.
+      - ./reverse-proxy:/etc/nginx/conf.d:ro
       # Operator-provided internal-CA certificate + key (plan §7).
       # Expected files: acms.crt (full chain) and acms.key, 0600.
       - /opt/acms/tls:/etc/nginx/tls:ro
