@@ -14,7 +14,7 @@
     {% for a in agents %}
     <tr>
       <td><code>{{ a.agent_id }}</code></td>
-      <td>{{ a.display_name }}</td>
+      <td><a href="/ui/agents/{{ a.agent_id }}">{{ a.display_name }}</a></td>
       <td><span class="trust trust-{{ a.trust_class }}">{{ a.trust_class }}</span></td>
       <td>{{ a.harness }}</td>
       <td>{{ a.bridge_version }}</td>

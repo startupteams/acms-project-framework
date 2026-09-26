@@ -15,16 +15,19 @@ live deployment on MIAM-00135 CT122, 2026-09-26.)
 **Branch:** `ops/ACMS-safe-release-rollback`
 **Plan:** feature-delivery plan 2026-09-26 §3–§12, §24, §28–§30
 
-- [ ] Pre-deploy verified PostgreSQL backup (plan §5)
-- [ ] Maintenance window during release transactions (plan §6)
-- [ ] Safe release transaction `deploy/release.sh` (plan §7)
-- [ ] Deterministic rollback `deploy/rollback.sh` Levels 0/1/2 + guards (plan §8/§9)
-- [ ] Automated rollback on failed validation (plan §10)
-- [ ] Two-stage post-deploy validation (plan §11)
-- [ ] Build identity: `/version` + System UI expose Git SHA/build time (plan §4)
-- [ ] Release records outside Git (`/opt/acms/releases/`) (plan §4)
-- [ ] SHA-tagged images (`acms-app:<git-sha-short>`)
-- [ ] ADR-0009 (Proposed)
+- [x] Pre-deploy verified PostgreSQL backup (plan §5)
+- [x] Maintenance window during release transactions (plan §6)
+- [x] Safe release transaction `deploy/release.sh` (plan §7)
+- [x] Deterministic rollback `deploy/rollback.sh` Levels 0/1/2 + guards (plan §8/§9)
+- [x] Automated rollback on failed validation (plan §10)
+- [x] Two-stage post-deploy validation (plan §11)
+- [x] Build identity: `/version` + System UI expose Git SHA/build time (plan §4)
+- [x] Release records outside Git (`/opt/acms/releases/`) (plan §4)
+- [x] SHA-tagged images (`acms-app:<git-sha-short>`)
+- [x] ADR-0009 (Proposed)
+
+(Live-proven on CT122 2026-09-26: drills 1–3; drill 3 = first clean end-to-end
+`Release ACCEPTED`; Level-2 auto-rollback chain exercised twice on real data.)
 
 ### 2. Work Management UI (feature slice 1)
 
@@ -38,20 +41,26 @@ live deployment on MIAM-00135 CT122, 2026-09-26.)
 - [x] Role authorization: admin mutate, worker read permitted work, observer read-only
 - [x] Execution tasks / handoffs / background routines visible per work item
 
+(Live on CT122 since 2026-09-26 — Work UI serving at `/ui/work`.)
+
 ### 3. Agent Detail + background routines (feature slice 2)
 
 **Branch:** `feat/ACMS-014-agent-detail-routines`
 **Plan:** feature-delivery plan §14
 
-- [ ] `/ui/agents/{agent_id}`: identity, trust class, harness, capability manifest
-- [ ] Assignment/execution-task history, handoffs, background routines inventory
+- [x] `/ui/agents/{agent_id}`: identity, trust class, harness, capability manifest
+- [x] Assignment/execution-task history, handoffs, background routines inventory
 
 ### 4. Live deployment after human approval
 
-- [ ] Merge PR 0 after human review
-- [ ] Human authorizes deployment of the safe-release tooling to CT122
-- [ ] Deploy via the new release transaction; verify rollback tooling on the live box
-- [ ] Document exact live SHA + release records
+- [x] Merge PR 0 after human review
+- [x] Human authorizes deployment of the safe-release tooling to CT122
+- [x] Deploy via the new release transaction; verify rollback tooling on the live box
+- [x] Document exact live SHA + release records
+
+(CT122 reached via bootstrap hops to 650d6f8 / 332f54d / 363cf3c, then the first
+full through-the-pipeline deploy of 137a008 ended in `Release ACCEPTED`. Every
+future merge deploys through `deploy/release.sh`.)
 
 ## Explicitly out of scope for this sprint
 

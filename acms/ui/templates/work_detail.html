@@ -75,7 +75,7 @@
     <tbody>
       {% for a in assignments %}
       <tr>
-        <td>{{ a.agent_name }}</td>
+        <td><a href="/ui/agents/{{ a.agent_id }}">{{ a.agent_name }}</a></td>
         <td><span class="status status-{{ a.status|lower }}">{{ a.status }}</span></td>
         <td>{{ a.assigned_by }}</td>
         <td class="muted">{{ a.assigned_at.strftime('%Y-%m-%d %H:%M') }}</td>

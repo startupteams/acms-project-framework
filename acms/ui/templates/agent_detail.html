@@ -1,0 +1,122 @@
+{% extends "base.html" %}
+{% block title %}ACMS Agent — {{ agent.display_name }}{% endblock %}
+{% block content %}
+<p><a href="/ui/agents">&larr; All agents</a></p>
+<h1>{{ agent.display_name }}</h1>
+
+<div class="cards">
+  <div class="card">
+    <h2>Identity</h2>
+    <p><strong>ACMS ID:</strong> <code>{{ agent.agent_id }}</code></p>
+    <p><strong>Trust class:</strong> <span class="trust trust-{{ agent.trust_class }}">{{ agent.trust_class }}</span></p>
+    <p><strong>Harness:</strong> {{ agent.harness }}</p>
+    <p><strong>Bridge / protocol:</strong> {{ agent.bridge_version }} / {{ agent.protocol_version }}</p>
+    <p class="muted">Registered {{ agent.created_str }} &middot; updated {{ agent.updated_str }}</p>
+    {% if agent.card_url %}<p><strong>Card:</strong> <code>{{ agent.card_url }}</code></p>{% endif %}
+  </div>
+  <div class="card">
+    <h2>Primary assignment</h2>
+    {% if active_assignment %}
+    <p class="big status-active">{{ active_assignment.status }}</p>
+    <p>on <a href="/ui/work/{{ active_assignment.work_item_id }}">{{ active_item_title }}</a></p>
+    <p class="muted">assigned {{ active_assignment.assigned_at.strftime("%Y-%m-%d %H:%M") }} by {{ active_assignment.assigned_by or "—" }}</p>
+    <p class="notice warn">{{ delivery_state }}</p>
+    <p class="muted">Liveness/heartbeat: not yet implemented (planned slice 3) — no status is shown rather than a fabricated one.</p>
+    {% else %}
+    <p class="big">No active primary assignment</p>
+    <p class="muted">This agent currently has no recorded primary work.</p>
+    {% endif %}
+  </div>
+  <div class="card">
+    <h2>Capability manifest</h2>
+    <ul class="caps">
+      {% for cap in capabilities %}
+      <li class="{{ 'cap-yes' if cap.declared else 'cap-no' }}">{{ cap.name }} — {{ 'declared' if cap.declared else 'not declared' }}</li>
+      {% endfor %}
+      {% for ext in extensions %}<li class="cap-yes">extension: {{ ext }}</li>{% endfor %}
+    </ul>
+  </div>
+</div>
+
+<section class="panel">
+  <h2>Assignment history</h2>
+  {% if assignments %}
+  <table class="data">
+    <thead><tr><th>Work item</th><th>Status</th><th>Assigned by</th><th>Assigned</th><th>Closed</th></tr></thead>
+    <tbody>
+      {% for a in assignments %}
+      <tr>
+        <td><a href="/ui/work/{{ a.work_item_id }}">{{ a.work_item_title }}</a></td>
+        <td><span class="status status-{{ a.status|lower }}">{{ a.status }}</span></td>
+        <td>{{ a.assigned_by }}</td>
+        <td>{{ a.assigned_str }}</td>
+        <td>{{ a.closed_str }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted">No assignments recorded for this agent yet.</p>
+  {% endif %}
+</section>
+
+<section class="panel">
+  <h2>Execution-task history</h2>
+  {% if tasks %}
+  <table class="data">
+    <thead><tr><th>Work item</th><th>Status</th><th>Bridge task id</th><th>Started</th><th>Finished</th></tr></thead>
+    <tbody>
+      {% for t in tasks %}
+      <tr>
+        <td><a href="/ui/work/{{ t.work_item_id }}">{{ t.work_item_title }}</a></td>
+        <td><span class="status status-{{ t.status|lower }}">{{ t.status }}</span></td>
+        <td><code>{{ t.external_task_id }}</code></td>
+        <td>{{ t.started_str }}</td>
+        <td>{{ t.finished_str }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted">No execution tasks recorded for this agent yet.</p>
+  {% endif %}
+</section>
+
+<section class="panel">
+  <h2>Handoffs</h2>
+  {% if handoffs %}
+  {% for h in handoffs %}
+  <div class="handoff">
+    <p><strong>{{ h.title }}</strong> — on <a href="/ui/work/{{ h.work_item_id }}">{{ h.work_item_title }}</a> <span class="muted">({{ h.author }}, {{ h.created_str }})</span></p>
+    <div class="markdown">{{ h.body_markdown }}</div>
+  </div>
+  {% endfor %}
+  {% else %}
+  <p class="muted">No handoffs on any work item assigned to this agent.</p>
+  {% endif %}
+</section>
+
+<section class="panel">
+  <h2>Background routines / cron inventory</h2>
+  <p class="muted">{{ routine_note }}</p>
+  {% if routines %}
+  <table class="data">
+    <thead><tr><th>Name</th><th>Enabled</th><th>Schedule / trigger</th><th>Purpose</th><th>Latest report</th><th>Reported at</th></tr></thead>
+    <tbody>
+      {% for r in routines %}
+      <tr>
+        <td>{{ r.name }}</td>
+        <td>{{ 'yes' if r.enabled else 'no' }}</td>
+        <td>{{ r.schedule }}</td>
+        <td>{{ r.purpose }}</td>
+        <td>{{ r.latest_status }}</td>
+        <td>{{ r.reported_str }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted">No background routines declared by this agent.</p>
+  {% endif %}
+</section>
+{% endblock %}

@@ -243,11 +243,15 @@ async def finish_execution_task(
 
 
 async def list_execution_tasks(
-    db: AsyncSession, work_item_id: str | None = None
+    db: AsyncSession,
+    work_item_id: str | None = None,
+    agent_id: str | None = None,
 ) -> list[ExecutionTaskRecord]:
     stmt = select(ExecutionTaskRecord).order_by(ExecutionTaskRecord.started_at)
     if work_item_id is not None:
         stmt = stmt.where(ExecutionTaskRecord.work_item_id == work_item_id)
+    if agent_id is not None:
+        stmt = stmt.where(ExecutionTaskRecord.agent_id == agent_id)
     result = await db.scalars(stmt)
     return list(result.all())
 
