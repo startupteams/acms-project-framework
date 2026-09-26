@@ -33,8 +33,7 @@ def _install_fake_ldap3(monkeypatch, *, entries, rebind_ok=True, bind_raises=Fal
     class FakeEntry:
         def __init__(self, dn, groups):
             self.entry_dn = dn
-            self.attributes = types.SimpleNamespace()
-            self.attributes.get = lambda key, default=None: types.SimpleNamespace(values=list(groups))
+            self.entry_attributes_as_dict = {"memberOf": list(groups), "member": list(groups)}
 
     class FakeConnection:
         def __init__(self, server, user=None, password=None, auto_bind=False, raise_exceptions=False, receive_timeout=None):
@@ -134,9 +133,7 @@ async def test_ldap_authenticate_maps_roles(monkeypatch, ui_settings):
     def _entry(dn, groups):
         e = types.SimpleNamespace()
         e.entry_dn = dn
-        e.attributes = types.SimpleNamespace(
-            get=lambda key, default=None: types.SimpleNamespace(values=list(groups))
-        )
+        e.entry_attributes_as_dict = {"memberOf": list(groups), "member": list(groups)}
         return e
 
     _install_fake_ldap3(

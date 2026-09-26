@@ -45,9 +45,7 @@ def _login(monkeypatch, role_dn: str, username: str = "jordan"):
 
         e = types.SimpleNamespace()
         e.entry_dn = f"uid={username},ou=people,dc=miam,dc=home,dc=arpa"
-        e.attributes = types.SimpleNamespace(
-            get=lambda key, default=None: types.SimpleNamespace(values=list(groups))
-        )
+        e.entry_attributes_as_dict = {"memberOf": list(groups), "member": list(groups)}
         return e
 
     _install_fake_ldap3(monkeypatch, entries=[_entry(username, [role_dn])], rebind_ok=True)
@@ -73,9 +71,7 @@ def test_login_sets_http_only_secure_lax_cookie(monkeypatch, ui_env):
 
     e = _t.SimpleNamespace()
     e.entry_dn = "uid=jordan,ou=people,dc=miam,dc=home,dc=arpa"
-    e.attributes = _t.SimpleNamespace(
-        get=lambda key, default=None: _t.SimpleNamespace(values=[ADMIN_DN])
-    )
+    e.entry_attributes_as_dict = {"memberOf": [ADMIN_DN], "member": [ADMIN_DN]}
     _install_fake_ldap3(monkeypatch, entries=[e], rebind_ok=True)
     resp = client.post("/ui/login", data={"username": "jordan", "password": "pw"})
     assert resp.status_code == 303
@@ -102,9 +98,7 @@ def test_bad_or_unmapped_credentials_fail_closed(monkeypatch, ui_env):
 
         e = types.SimpleNamespace()
         e.entry_dn = "uid=x,ou=people,dc=miam,dc=home,dc=arpa"
-        e.attributes = types.SimpleNamespace(
-            get=lambda key, default=None: types.SimpleNamespace(values=list(groups))
-        )
+        e.entry_attributes_as_dict = {"memberOf": list(groups), "member": list(groups)}
         return e
 
     # Wrong password (rebind fails) → generic 403, no cookie, no enumeration.
