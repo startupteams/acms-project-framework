@@ -37,6 +37,9 @@ class WorkItemRecord(Base):
     __tablename__ = "work_items"
 
     work_item_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    # Immutable human-readable key (ACMS-REQ-052): ACMS-WORK-000001 style.
+    # Nullable for pre-slice rows; allocated durably via acms/work_keys.py.
+    work_key: Mapped[str | None] = mapped_column(String(32), unique=True, nullable=True, index=True)
     parent_id: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("work_items.work_item_id", ondelete="SET NULL"), nullable=True, index=True
     )
@@ -70,6 +73,12 @@ class AssignmentRecord(Base):
     __tablename__ = "work_assignments"
 
     assignment_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    # Immutable human-readable key (ACMS-REQ-052): ACMS-ASG-000001 style.
+    assignment_key: Mapped[str | None] = mapped_column(String(32), unique=True, nullable=True, index=True)
+    # Dispatch/correlation facts (combined slice 3+4; facts, not A2A state).
+    dispatched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    acknowledged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    bound_session_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     agent_id: Mapped[str] = mapped_column(String(36), ForeignKey("agents.agent_id"), index=True)
     work_item_id: Mapped[str] = mapped_column(String(36), ForeignKey("work_items.work_item_id"), index=True)
     # ACTIVE | COMPLETED | RELEASED | SUSPENDED
