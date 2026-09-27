@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
-from sqlalchemy import DateTime, String, Text, select
+from sqlalchemy import DateTime, Integer, String, Text, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -49,6 +49,7 @@ class ProvisioningRequest(Base):
     state: Mapped[str] = mapped_column(String(30), default="APPROVED")
     # RESERVED → APPROVED → PROVISIONING → LIVE / FAILED / RETIRED
     authority: Mapped[str] = mapped_column(String(60))
+    attempt: Mapped[int] = mapped_column(Integer, default=1)
     approver: Mapped[str] = mapped_column(String(120))
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
@@ -154,8 +155,8 @@ async def provision_agent(prov_id: str, db: AsyncSession = Depends(get_session))
     # must be a distinct attempt (attempt counter in the request id).
     attempt_request_id = prov.request_id
     if prov.state == "FAILED":
-        attempt = prov.request_id.count("|retry:") + 1
-        attempt_request_id = f"{prov.request_id}|retry:{attempt}"
+        prov.attempt = (prov.attempt or 1) + 1
+        attempt_request_id = f"{prov.request_id}|retry:{prov.attempt}"
     try:
         job = client.create_runtime(
             acms_agent_id=agent.agent_id, name=agent.display_name,
