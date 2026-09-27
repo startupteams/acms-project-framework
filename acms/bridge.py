@@ -144,7 +144,7 @@ class HermesBridge:
         if session_id:
             return _post_json(f"{self._t.base_url}/api/sessions/{session_id}/chat",
                               self._t.api_key,
-                              {"messages": [{"role": "user", "content": instruction}]},
+                              {"message": instruction},
                               headers={"X-Hermes-Session-Id": session_id})
         return _post_json(f"{self._t.base_url}/v1/runs", self._t.api_key, {
             "input": [{"role": "user", "content": instruction}],
