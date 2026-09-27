@@ -155,7 +155,7 @@ class HermesBridge:
     def steer(self, session_id: str, message: str) -> dict:
         return _post_json(f"{self._t.base_url}/api/sessions/{session_id}/chat",
                           self._t.api_key,
-                          {"messages": [{"role": "user", "content": message}]},
+                          {"message": message},
                           headers={"X-Hermes-Session-Id": session_id})
 
     def interrupt(self, run_id: str) -> dict:
