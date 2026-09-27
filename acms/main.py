@@ -32,6 +32,10 @@ install_ui(app)
 app.include_router(work_router)
 app.include_router(telemetry_router)
 
+from .server_manager_api import router as server_manager_router  # noqa: E402
+
+app.include_router(server_manager_router)
+
 
 @app.get("/health")
 async def health() -> dict[str, str]:
