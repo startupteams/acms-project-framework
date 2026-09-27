@@ -76,8 +76,37 @@ def test_provision_calls_sm_and_records_job(client, monkeypatch):
         calls.update(kwargs)
         return ProvisionJob(job_id="job-123", state="DONE", error=None, steps=[], created=True)
 
-    from acms.server_manager_client import ServerManagerClient
+    from acms.server_manager_client import RuntimeHandle, ServerManagerClient
+
+    def fake_list(self, acms_agent_id=None):
+        return [RuntimeHandle(runtime_id="rt-1", acms_agent_id=acms_agent_id or "x",
+                              actual_state="RUNNING", vmid=None, node=None,
+                              hermes_state_branch=None, raw={})]
+
     monkeypatch.setattr(ServerManagerClient, "create_runtime", fake_create)
+    monkeypatch.setattr(ServerManagerClient, "list_runtimes", fake_list)
+
+    # ensure the JINT-001 table exists (this test uses monkeypatched imports that may postdate
+    # the autouse create_all)
+    import anyio
+
+    from acms.db import SessionLocal
+    from acms.server_manager_api import ProvisioningRequest
+
+    async def _ensure():
+        async with SessionLocal() as session:
+            await session.execute(text(
+                "CREATE TABLE IF NOT EXISTS provisioning_requests ("
+                " id VARCHAR(36) PRIMARY KEY, agent_id VARCHAR(36), request_id VARCHAR(64),"
+                " job_id VARCHAR(64), runtime_id VARCHAR(64), state VARCHAR(30),"
+                " authority VARCHAR(60), approver VARCHAR(120), error TEXT,"
+                " created_at TIMESTAMP, updated_at TIMESTAMP)"
+            ))
+            await session.commit()
+
+    from sqlalchemy import text
+
+    anyio.run(_ensure)
 
     body = {
         "display_name": "acms-worker-001",
@@ -101,7 +130,7 @@ def test_provision_calls_sm_and_records_job(client, monkeypatch):
 
     # status endpoint reflects state
     r3 = client.get(f"/api/v1/server-manager/requests/{prov_id}", headers=AUTH)
-    assert r3.json()["state"] == "PROVISIONING"
+    assert r3.json()["state"] == "LIVE"
 
 
 def test_provision_ownership_refusal_maps_403(client, monkeypatch):
@@ -174,3 +203,29 @@ def test_provision_retry_after_failure_uses_new_request_id(client, monkeypatch):
     r2 = client.post(f"/api/v1/server-manager/requests/{prov_id}/provision", headers=AUTH)
     assert r2.status_code == 202, r2.text
     assert seen and seen[0].endswith("|retry:1"), seen
+
+
+def test_provision_failed_job_maps_request_failed(client, monkeypatch):
+    from acms.server_manager_client import ProvisionJob
+
+    def fake_create(self, **kwargs):
+        return ProvisionJob(job_id="job-f", state="FAILED", error="pve down", steps=[], created=True)
+
+    from acms.server_manager_client import ServerManagerClient
+    monkeypatch.setattr(ServerManagerClient, "create_runtime", fake_create)
+    from acms.settings import get_settings
+    monkeypatch.setattr(get_settings(), "server_manager_base_url", "http://sm.test")
+    monkeypatch.setattr(get_settings(), "server_manager_token", "tok")
+
+    body = {
+        "display_name": "acms-worker-001",
+        "authority": "pre-authorized_sprint_execution_context",
+        "approver": "jordan",
+    }
+    r = client.post("/api/v1/server-manager/agents", json=body, headers=AUTH)
+    prov_id = r.json()["request"]["id"]
+    r2 = client.post(f"/api/v1/server-manager/requests/{prov_id}/provision", headers=AUTH)
+    assert r2.status_code == 202
+    r3 = client.get(f"/api/v1/server-manager/requests/{prov_id}", headers=AUTH)
+    assert r3.json()["state"] == "FAILED"
+    assert "pve down" in (r3.json().get("error") or "")

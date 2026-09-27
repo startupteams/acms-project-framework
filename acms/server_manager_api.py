@@ -174,10 +174,26 @@ async def provision_agent(prov_id: str, db: AsyncSession = Depends(get_session))
         raise HTTPException(status_code=502, detail=f"Server Manager error: {e}")
 
     prov.job_id = job.job_id
-    prov.state = "PROVISIONING"
+    # Honest state mapping (capability honesty per repo policy): if Server Manager returned
+    # a terminal job state, record THAT, not a provisional PROVISIONING.
+    if job.state == "FAILED":
+        prov.state = "FAILED"
+        prov.error = (job.error or "Server Manager job failed")[:800]
+    elif job.state == "DONE":
+        prov.state = "LIVE"
+        # correlate runtime id now that provisioning completed synchronously
+        try:
+            rt = client.list_runtimes(acms_agent_id=agent.agent_id)
+            if rt:
+                prov.runtime_id = rt[0].runtime_id
+        except ServerManagerError:
+            pass
+    else:
+        prov.state = "PROVISIONING"
     prov.updated_at = datetime.now(timezone.utc)
     await db.commit()
-    return {"job_id": job.job_id, "state": job.state, "request_id": prov.request_id}
+    return {"job_id": job.job_id, "state": job.state, "request_id": prov.request_id,
+            "request_state": prov.state}
 
 
 @router.get("/requests/{prov_id}", dependencies=[Depends(require_admin_token)])
