@@ -42,6 +42,8 @@ services:
       # Server Manager integration (JINT-001): base URL of the machine API + scoped token (§11).
       ACMS_SERVER_MANAGER_BASE_URL: ${ACMS_SERVER_MANAGER_BASE_URL:-}
       ACMS_SERVER_MANAGER_TOKEN: ${ACMS_SERVER_MANAGER_TOKEN:-}
+      # Agent Bridge targets (slice 3+4 plan §15): JSON list of {agent_id, base_url, api_key}.
+      ACMS_BRIDGE_TARGETS_JSON: ${ACMS_BRIDGE_TARGETS_JSON:-}
       ACMS_LDAP_URL: ${ACMS_LDAP_URL:?set ACMS_LDAP_URL in /opt/acms/.env}
       ACMS_LDAP_BIND_DN: ${ACMS_LDAP_BIND_DN:-}
       ACMS_LDAP_BIND_PASSWORD: ${ACMS_LDAP_BIND_PASSWORD:-}
