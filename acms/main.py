@@ -1,3 +1,5 @@
+from contextlib import asynccontextmanager
+
 from fastapi import Depends, FastAPI, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -9,11 +11,26 @@ from .registry import list_agents, register_agent
 from .security import require_admin_token
 from .ui.routes import install_ui
 from .work_api import router as work_router
+from .telemetry_api import router as telemetry_router
+from .telemetry_scheduler import TelemetryScheduler
 
-app = FastAPI(title="AgentifyMe Cloud Management System", version=__version__)
+_scheduler = TelemetryScheduler()
+
+
+@asynccontextmanager
+async def lifespan(app):
+    _scheduler.start()
+    try:
+        yield
+    finally:
+        await _scheduler.stop()
+
+
+app = FastAPI(title="AgentifyMe Cloud Management System", version=__version__, lifespan=lifespan)
 
 install_ui(app)
 app.include_router(work_router)
+app.include_router(telemetry_router)
 
 
 @app.get("/health")

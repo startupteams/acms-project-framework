@@ -16,6 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .models import AgentRecord
+from .work_keys import allocate_work_key, allocate_assignment_key
 from .work_models import (
     AssignmentCreate,
     AssignmentRecord,
@@ -51,6 +52,7 @@ async def create_work_item(db: AsyncSession, payload: WorkItemCreate) -> WorkIte
     now = _now()
     record = WorkItemRecord(
         work_item_id=_new_id(),
+        work_key=await allocate_work_key(db),
         parent_id=payload.parent_id,
         kind=payload.kind.value,
         title=payload.title,
@@ -127,6 +129,7 @@ async def assign_primary(
 
     record = AssignmentRecord(
         assignment_id=_new_id(),
+        assignment_key=await allocate_assignment_key(db),
         agent_id=payload.agent_id,
         work_item_id=payload.work_item_id,
         status="ACTIVE",

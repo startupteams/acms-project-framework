@@ -90,3 +90,20 @@ future merge deploys through `deploy/release.sh`.)
 
 Record shipped requirements, validation results, accepted/rejected ADR
 choices, unresolved work, and the recommended next PR at sprint completion.
+---
+
+## Combined Slice 3+4 — heartbeat, correlation, reconciliation, A2A control (2026-09-26 plan)
+
+**Branch:** `feat/ACMS-031-agent-bridge-live-control` · **ADR-0010 (Accepted)** · ADR-0009 accepted with amendments
+
+- [x] ADR-0009 Accepted (amended with live evidence + deployment authority policy)
+- [x] ADR-0010 (heartbeat/reconciliation/control defaults) Accepted
+- [x] ACMS-REQ-052 human-readable Work/Assignment keys (durable counter allocation)
+- [x] Heartbeat ingestion (acms-heartbeat-v1, complete snapshot per 60 s contract)
+- [x] Connectivity derivation (UNKNOWN/HEALTHY/STALE/UNREACHABLE; 5 min / 1 h / 24 h thresholds, config-backed)
+- [x] Semantic event log (ordered, correlation-bearing, change-only)
+- [x] Context telemetry + warnings (70/85/95 configurable; invalid → UNKNOWN/INVALID, never fabricated)
+- [x] Hermes harness research + live control tests (HARNESS_CONTROL_MAPPING.md — pause/resume verified UNSUPPORTED, never faked)
+- [x] Hermes Agent Bridge module (status/send_work/steer/interrupt/cancel/handoff/title) + live E2E
+- [x] UI: Agent Detail live status + events + capability-honest controls; Work keys in views
+- [ ] Bridge dispatch/control UI buttons wired to live bridge targets (deploy-side config)

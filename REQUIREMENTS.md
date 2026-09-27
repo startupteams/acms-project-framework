@@ -499,6 +499,11 @@ Each registered agent/bridge shall provide a lightweight liveness heartbeat or e
 - ACMS records the latest heartbeat/health timestamp.
 - Liveness can be distinguished from task progress.
 - Heartbeat cadence and stale thresholds are configurable.
+- *(2026-09-26 clarification, ADR-0010):* heartbeat is a complete lightweight
+  versioned status snapshot (identity, session, model, context telemetry,
+  assignment correlation) sent on a fixed cadence — not a bare ping.
+- ACMS connectivity is derived from contact recency and is displayed
+  separately from the harness-reported `agent_running` fact.
 
 ### ACMS-REQ-034 - Stale-agent reconciliation
 
@@ -513,6 +518,8 @@ ACMS shall actively reconcile an agent when expected heartbeats/status updates a
 - A working agent that misses the configured stale threshold can be actively queried.
 - Failure to respond transitions the agent into a degraded/unreachable state rather than silently remaining healthy.
 - A scheduled fleet-wide reconciliation can detect divergent ACMS/agent state even when no live failure was reported.
+- *(2026-09-26 clarification, ADR-0010):* reconciliation may automatically correct observed operational telemetry (preserving history and logging discrepancy events) but must never silently change approved Work Item scope or Assignment.
+- Reconciliation thresholds (1 h stale, 24 h fleet) are configuration-backed.
 
 ### ACMS-REQ-035 - Durable semantic events with sequence/correlation identity
 
@@ -554,6 +561,56 @@ Under normal healthy network and agent conditions, ACMS shall deliver an accepte
 
 - An integration test can measure send-to-acceptance latency.
 - Temporary network/agent outages are reported rather than counted as successful delivery.
+
+### ACMS-REQ-052 - Human-readable work and assignment correlation identifiers
+
+**Sprint Priority:** 3
+
+**Requirement**
+
+ACMS shall assign immutable human-readable identifiers to Work Items and primary assignments and communicate them to the executing bridge/harness.
+
+**Acceptance criteria**
+
+- Work Items have a unique immutable human-readable key in addition to their UUID.
+- Primary assignments have a unique immutable human-readable key in addition to their UUID.
+- Keys are never reused and are not derived from mutable row counts.
+- The work key is communicated during work dispatch (including the desired session title).
+- The assignment key is included in structured task/control metadata.
+- Session/title information can be compared with expected ACMS work.
+- A later external tracker reference (e.g. Jira/GitHub) can coexist without replacing the ACMS key.
+
+### ACMS-REQ-053 - Session/work alignment and drift detection
+
+**Sprint Priority:** 3
+
+**Requirement**
+
+ACMS shall compare the agent's reported session/work identity to its approved primary assignment.
+
+**Acceptance criteria**
+
+- Heartbeats contain session ID/title when the harness provides them.
+- ACMS knows the expected work/assignment keys for the active assignment.
+- ACMS derives an alignment of ALIGNED, UNKNOWN, or MISMATCH.
+- Mismatch does not change approved scope.
+- Persistent mismatch while the agent is running can request a structured Markdown handoff after a configurable grace period.
+- Discrepancies are auditable (semantic events).
+
+### ACMS-REQ-054 - Context-window telemetry and warning
+
+**Sprint Priority:** 3
+
+**Requirement**
+
+ACMS shall collect available current-context usage telemetry and display used tokens, maximum tokens, and utilization percentage, with configurable warning levels.
+
+**Acceptance criteria**
+
+- Current context-window usage is tracked separately from session/lifetime and cumulative API token counts.
+- Invalid telemetry values (null/negative/unparsable/used > max) are not treated as valid counts and are surfaced as UNKNOWN/INVALID rather than fabricated.
+- Warning levels (ELEVATED/HIGH/CRITICAL thresholds) are configurable and visible.
+- Explicit context-overflow/payload-too-large failures reported by the harness/provider are recorded as significant events.
 
 ---
 

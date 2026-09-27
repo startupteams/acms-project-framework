@@ -55,6 +55,7 @@ def _badge(kind: str) -> str:
 def _view_item(record, parent_title: str | None = None) -> dict:
     return {
         "work_item_id": record.work_item_id,
+        "work_key": getattr(record, "work_key", None),
         "parent_id": record.parent_id,
         "parent_title": parent_title,
         "kind": record.kind,

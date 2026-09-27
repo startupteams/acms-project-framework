@@ -24,6 +24,21 @@ class Settings(BaseSettings):
     ldap_group_worker: str = ""
     ldap_group_observer: str = ""
 
+    # Live fleet telemetry thresholds (combined slice 3+4; ADR-0010 Accepted defaults).
+    heartbeat_interval_seconds: int = 60
+    heartbeat_stale_seconds: int = 300
+    stale_reconcile_seconds: int = 3600
+    fleet_reconcile_seconds: int = 86400
+    telemetry_sample_seconds: int = 300
+    session_alignment_grace_seconds: int = 120
+    context_elevated_percent: int = 70
+    context_high_percent: int = 85
+    context_critical_percent: int = 95
+
+    # Agent Bridge targets (plan §15): JSON list of {agent_id, base_url,
+    # api_key}. Keys live in .env/config, never committed (plan §18).
+    bridge_targets_json: str = ""
+
 
 @lru_cache
 def get_settings() -> Settings:

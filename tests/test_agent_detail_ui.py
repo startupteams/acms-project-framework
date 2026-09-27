@@ -157,7 +157,10 @@ def test_agent_detail_renders_full_history(monkeypatch, ui_env):
     assert "ACTIVE" in page.text
     assert "Slice 2: Agent Detail" in page.text
     assert "Recorded assignment only" in page.text
-    assert "not yet implemented" in page.text  # heartbeat absence, never fabricated
+    # Slice 3+4 landed: liveness now exists (UNKNOWN until first contact), so the
+    # old "not yet implemented" heartbeat note must be GONE (plan §5 honesty).
+    assert "not yet implemented" not in page.text
+    assert "UNKNOWN" in page.text  # never-contacted state, not fabricated
 
     # History tables.
     assert "Assignment history" in page.text
