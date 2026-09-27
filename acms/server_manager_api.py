@@ -149,10 +149,17 @@ async def provision_agent(prov_id: str, db: AsyncSession = Depends(get_session))
         raise HTTPException(status_code=404, detail="reserved identity missing")
 
     client = _client()
+    # Retry semantics (§13): a FAILED request re-provisions with a NEW request_id — the original
+    # request_id is idempotency-bound to its original job on the Server Manager side, so a retry
+    # must be a distinct attempt (attempt counter in the request id).
+    attempt_request_id = prov.request_id
+    if prov.state == "FAILED":
+        attempt = prov.request_id.count("|retry:") + 1
+        attempt_request_id = f"{prov.request_id}|retry:{attempt}"
     try:
         job = client.create_runtime(
             acms_agent_id=agent.agent_id, name=agent.display_name,
-            harness=agent.harness, request_id=prov.request_id,
+            harness=agent.harness, request_id=attempt_request_id,
             model_route=None, bridge_profile={"registered_by": prov.authority},
         )
     except ServerManagerForbidden as e:

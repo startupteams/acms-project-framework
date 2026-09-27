@@ -124,3 +124,53 @@ def test_provision_ownership_refusal_maps_403(client, monkeypatch):
     prov_id = r.json()["request"]["id"]
     r2 = client.post(f"/api/v1/server-manager/requests/{prov_id}/provision", headers=AUTH)
     assert r2.status_code == 403
+
+
+def test_provision_retry_after_failure_uses_new_request_id(client, monkeypatch):
+    from acms.server_manager_client import ProvisionJob
+
+    seen = []
+
+    def fake_create(self, **kwargs):
+        seen.append(kwargs["request_id"])
+        # first call simulates SM-side failure (client raises nothing — SM job FAILED state is
+        # fine, but for retry testing we simulate ACMS recorded FAILED then re-provision)
+        return ProvisionJob(job_id="job-2", state="RUNNING", error=None, steps=[], created=True)
+
+    from acms.server_manager_client import ServerManagerClient
+    monkeypatch.setattr(ServerManagerClient, "create_runtime", fake_create)
+    from acms.settings import get_settings
+    monkeypatch.setattr(get_settings(), "server_manager_base_url", "http://sm.test")
+    monkeypatch.setattr(get_settings(), "server_manager_token", "tok")
+
+    body = {
+        "display_name": "acms-worker-001",
+        "authority": "pre-authorized_sprint_execution_context",
+        "approver": "jordan",
+    }
+    r = client.post("/api/v1/server-manager/agents", json=body, headers=AUTH)
+    prov_id = r.json()["request"]["id"]
+
+    # simulate a failure: mark the request FAILED (same SQL path an operator/reaper would use)
+    import subprocess  # noqa
+    # Direct DB manipulation through the app's own session:
+    import anyio
+
+    from acms.db import SessionLocal
+    from acms.server_manager_api import ProvisioningRequest
+
+    async def _mark_failed():
+        async with SessionLocal() as session:
+            from sqlalchemy import update
+
+            await session.execute(
+                update(ProvisioningRequest).where(ProvisioningRequest.id == prov_id)
+                .values(state="FAILED")
+            )
+            await session.commit()
+
+    anyio.run(_mark_failed)
+
+    r2 = client.post(f"/api/v1/server-manager/requests/{prov_id}/provision", headers=AUTH)
+    assert r2.status_code == 202, r2.text
+    assert seen and seen[0].endswith("|retry:1"), seen
