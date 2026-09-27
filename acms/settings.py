@@ -39,6 +39,12 @@ class Settings(BaseSettings):
     # api_key}. Keys live in .env/config, never committed (plan §18).
     bridge_targets_json: str = ""
 
+    # Server Manager integration (JINT-001, REV4 §12/§13): base URL of the
+    # machine API (e.g. http://10.0.20.108:8300) + the scoped svc-acms token
+    # (§11: outside Git, rotatable).
+    server_manager_base_url: str = ""
+    server_manager_token: str = ""
+
 
 @lru_cache
 def get_settings() -> Settings:
