@@ -92,7 +92,7 @@ def upgrade() -> None:
     op.create_table(
         "agent_events",
         sa.Column("event_id", sa.String(36), primary_key=True),
-        sa.Column("sequence", sa.Integer(), sa.Identity(), nullable=False),
+        sa.Column("sequence", sa.Integer(), nullable=True),
         sa.Column("timestamp", sa.DateTime(timezone=True), nullable=False),
         sa.Column("event_type", sa.String(64), nullable=False),
         sa.Column("actor_source", sa.String(128), nullable=True),

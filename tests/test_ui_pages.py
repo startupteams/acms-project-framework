@@ -167,7 +167,10 @@ def test_home_and_system_pages_show_real_data_only(monkeypatch, ui_env):
     home = client.get("/ui/", cookies=resp)
     assert home.status_code == 200
     assert "Not yet implemented" in home.text
-    assert "primary assignment" in home.text
+    # Slice 2 corrected the list: primary assignment now EXISTS (Work UI), so it
+    # must NOT be listed as not-implemented; agent status/last contact still are.
+    assert "primary assignment" not in home.text
+    assert "agent status" in home.text
 
     system = client.get("/ui/system", cookies=resp)
     assert system.status_code == 200

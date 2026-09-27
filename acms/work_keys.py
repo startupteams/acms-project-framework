@@ -11,8 +11,11 @@ the counter only ever increments, even when rows are deleted.
 """
 from __future__ import annotations
 
-from sqlalchemy import text
+from sqlalchemy import String, text
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Mapped, mapped_column
+
+from .db import Base
 
 WORK_PREFIX = "ACMS-WORK-"
 ASG_PREFIX = "ACMS-ASG-"
@@ -56,3 +59,13 @@ def extract_work_key_from_title(title: str | None) -> str | None:
 
     m = re.search(r"ACMS-WORK-\d{6,}", title)
     return m.group(0) if m else None
+
+
+class KeyCounterRecord(Base):
+    """Durable allocation counters (keys + event sequence). Row per counter;
+    value only ever increments (keys/sequences never reused)."""
+
+    __tablename__ = "acms_key_counters"
+
+    counter_name: Mapped[str] = mapped_column(String(64), primary_key=True)
+    counter_value: Mapped[int] = mapped_column(nullable=False)

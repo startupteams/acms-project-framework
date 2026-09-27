@@ -125,7 +125,7 @@ class AgentEventRecord(Base):
     __tablename__ = "agent_events"
 
     event_id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    sequence: Mapped[int] = mapped_column(Integer, nullable=False, autoincrement=True)
+    sequence: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     event_type: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     actor_source: Mapped[str | None] = mapped_column(String(128), nullable=True)
