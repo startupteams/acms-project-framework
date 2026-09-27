@@ -1,7 +1,27 @@
 # ADR-0009: Deterministic safe-release transaction with automated rollback
 
-**Status:** Proposed
+**Status:** Accepted (amended 2026-09-26 per combined slice 3+4 plan §2.1)
 **Date:** 2026-09-26
+
+## Amendments (2026-09-26, human-approved)
+
+1. **Accepted with live evidence.** The mechanism below has been proven on the
+   live CT122 production system across five drill/deploy cycles on 2026-09-26:
+   drills 1–3 (the third achieving the first clean end-to-end
+   `Release ACCEPTED`), two routine pipeline deploys (`137a008`, `9545123`),
+   and two Level-2 auto-rollback activations that were **physically correct**
+   (checksum-verified restore, `acms_old` forensics copy, data intact) — the
+   failures they surfaced were tooling bugs (PRs #6, #8), each fixed and
+   re-proven through the pipeline.
+2. **Deployment authority policy (explicit):** production deployment means a
+   human-authorized `deploy/release.sh` execution (or accepted successor).
+   After a deployment is authorized, **rollback to the immediately previous
+   known-good release is pre-authorized** if release validation fails — no
+   second human approval is required to return the service to its exact
+   pre-deployment state (plan §3; rollback agent must stop and request human
+   direction if it cannot prove the previous state is restorable, plan §29).
+3. The already-validated release/rollback mechanism is **not** changed by this
+   amendment; acceptance makes existing practice policy.
 
 ## Context
 
