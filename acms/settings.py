@@ -35,6 +35,10 @@ class Settings(BaseSettings):
     context_high_percent: int = 85
     context_critical_percent: int = 95
 
+    # Agent Bridge targets (plan §15): JSON list of {agent_id, base_url,
+    # api_key}. Keys live in .env/config, never committed (plan §18).
+    bridge_targets_json: str = ""
+
 
 @lru_cache
 def get_settings() -> Settings:

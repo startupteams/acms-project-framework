@@ -93,7 +93,11 @@ class TelemetryScheduler:
 
         stale_after = timedelta(seconds=s.heartbeat_stale_seconds)
         reconcile_after = timedelta(seconds=s.stale_reconcile_seconds)
-        delta = now_dt - status.last_contact_at
+        lc = status.last_contact_at
+        if lc.tzinfo is None:
+            from datetime import timezone as _tz
+            lc = lc.replace(tzinfo=_tz.utc)
+        delta = now_dt - lc
 
         new_connectivity = status.connectivity
         if delta <= stale_after:

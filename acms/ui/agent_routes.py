@@ -15,6 +15,7 @@ Honesty rules (plan §14):
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..db import get_session
@@ -23,6 +24,9 @@ from .. import work_service
 from .routes import _base_context
 from .session_auth import current_user
 from .work_routes import DELIVERY_STATE
+from ..telemetry_models import (
+    CONNECTIVITY_UNKNOWN, CONNECTIVITY_HEALTHY, CONNECTIVITY_STALE, CONNECTIVITY_UNREACHABLE,
+)
 
 router = APIRouter(prefix="/ui/agents", include_in_schema=False)
 
@@ -161,8 +165,63 @@ async def agent_detail(
             for r in routines
         ],
         "routine_note": ROUTINE_NOTE,
-        # Slice 3 has not landed: liveness is not maintained anywhere yet.
-        "heartbeat_pending": True,
         "delivery_state": DELIVERY_STATE,
     }
+
+    # --- live telemetry (combined slice 3+4; ADR-0010) ---
+    from ..telemetry_service import TelemetryService
+
+    status_rec = await TelemetryService.get_status(db, agent_id)
+    live = {
+        "has_status": status_rec is not None,
+        "connectivity": status_rec.connectivity if status_rec else CONNECTIVITY_UNKNOWN,
+        "last_contact_str": _fmt(status_rec.last_contact_at) if status_rec else "—",
+        "last_contact_source": (status_rec.last_contact_source or "—") if status_rec else "—",
+        "agent_running": (status_rec.agent_running or "unknown") if status_rec else "unknown",
+        "session_id": status_rec.session_id if status_rec else None,
+        "session_title": status_rec.session_title if status_rec else None,
+        "alignment": status_rec.alignment if status_rec else None,
+        "model_id": status_rec.model_id if status_rec else None,
+        "provider": status_rec.provider if status_rec else None,
+        "context_used": status_rec.context_used_tokens if status_rec else None,
+        "context_max": status_rec.context_max_tokens if status_rec else None,
+        "context_pct": status_rec.context_utilization_percent if status_rec else None,
+        "context_warning": status_rec.context_warning if status_rec else None,
+        "context_valid": status_rec.context_telemetry_valid if status_rec else None,
+        "platforms": (status_rec.platforms_connected or "") if status_rec else "",
+    }
+    # Plan §17: no fabricated context numbers — if telemetry invalid/absent, show that.
+    if not live["context_valid"]:
+        live["context_display"] = "UNKNOWN/INVALID"
+        live["context_pct_display"] = "—"
+    elif status_rec is not None and status_rec.context_max_tokens:
+        live["context_display"] = f"{status_rec.context_used_tokens:,} / {status_rec.context_max_tokens:,} tokens"
+        live["context_pct_display"] = f"{status_rec.context_utilization_percent}%"
+    else:
+        live["context_display"] = "UNKNOWN"
+        live["context_pct_display"] = "—"
+
+    # Recent semantic events for this agent (plan §17 Agent Detail).
+    from sqlalchemy import select as _select
+    from ..telemetry_models import AgentEventRecord
+
+    ev_rows = (
+        await db.scalars(
+            select(AgentEventRecord)
+            .where(AgentEventRecord.agent_id == agent_id)
+            .order_by(AgentEventRecord.sequence.desc())
+            .limit(10)
+        )
+    ).all()
+    live["events"] = [
+        {"event_type": e.event_type, "summary": e.summary, "when": _fmt(e.timestamp)}
+        for e in ev_rows
+    ]
+
+    # Controls: only what the harness mapping proved (plan §13/§17).
+    supported = ["status", "send_work", "steer", "interrupt", "cancel", "request_handoff", "set_session_title"]
+    live["supported_controls"] = supported
+    live["unsupported_controls"] = ["pause", "resume"]
+
+    context |= {"live": live, "heartbeat_pending": False}
     return _templates().TemplateResponse(request, "agent_detail.html", context)

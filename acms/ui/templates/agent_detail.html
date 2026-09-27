@@ -21,10 +21,26 @@
     <p>on <a href="/ui/work/{{ active_assignment.work_item_id }}">{{ active_item_title }}</a></p>
     <p class="muted">assigned {{ active_assignment.assigned_at.strftime("%Y-%m-%d %H:%M") }} by {{ active_assignment.assigned_by or "—" }}</p>
     <p class="notice warn">{{ delivery_state }}</p>
-    <p class="muted">Liveness/heartbeat: not yet implemented (planned slice 3) — no status is shown rather than a fabricated one.</p>
+    <p class="muted">Connectivity and agent_running are tracked separately (ADR-0010); heartbeat is a full status snapshot.</p>
     {% else %}
     <p class="big">No active primary assignment</p>
     <p class="muted">This agent currently has no recorded primary work.</p>
+    {% endif %}
+  </div>
+  <div class="card">
+    <h2>Live status</h2>
+    {% if live.has_status %}
+    <p><strong>Connectivity:</strong> <span class="status conn-{{ live.connectivity|lower }}">{{ live.connectivity }}</span></p>
+    <p><strong>Agent running:</strong> {{ live.agent_running }}</p>
+    <p class="muted">Last contact: {{ live.last_contact_str }} ({{ live.last_contact_source }})</p>
+    {% if live.model_id %}<p><strong>Model:</strong> {{ live.model_id }}{% if live.provider %} ({{ live.provider }}){% endif %}</p>{% endif %}
+    <p><strong>Context:</strong> {{ live.context_display }} <span class="muted">({{ live.context_pct_display }}{% if live.context_warning %} · {{ live.context_warning }}{% endif %})</span></p>
+    {% if live.platforms %}<p class="muted">Platforms: {{ live.platforms }}</p>{% endif %}
+    {% if live.alignment %}<p><strong>Session alignment:</strong> <span class="status align-{{ live.alignment|lower }}">{{ live.alignment }}</span></p>{% endif %}
+    {% if live.session_title %}<p class="muted">Reported session: {{ live.session_title }}</p>{% endif %}
+    {% else %}
+    <p class="big">UNKNOWN</p>
+    <p class="muted">Never contacted — no heartbeat has arrived yet. Connectivity is UNKNOWN until first contact (ADR-0010).</p>
     {% endif %}
   </div>
   <div class="card">
