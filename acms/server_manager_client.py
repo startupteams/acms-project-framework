@@ -73,14 +73,14 @@ class ServerManagerClient:
 
     # ---------------------------------------------------------------- transport
     def _call(self, method: str, path: str, body: dict | None = None,
-              expected: tuple[int, ...] = (200, 201, 202)) -> dict:
+              expected: tuple[int, ...] = (200, 201, 202), timeout: int | None = None) -> dict:
         data = json.dumps(body).encode() if body is not None else None
         req = urllib.request.Request(f"{self.base_url}{path}", data=data, method=method)
         req.add_header("Authorization", f"Bearer {self.token}")
         if body is not None:
             req.add_header("Content-Type", "application/json")
         try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+            with urllib.request.urlopen(req, timeout=timeout or self.timeout) as resp:
                 return json.loads(resp.read().decode() or "{}")
         except urllib.error.HTTPError as e:
             detail = e.read().decode(errors="replace")[:400]
@@ -98,7 +98,12 @@ class ServerManagerClient:
                        model_route: str | None = None,
                        bridge_profile: dict | None = None,
                        request_id: str | None = None) -> ProvisionJob:
-        """POST /api/v1/agent-runtimes — idempotent on request_id (§10/§13)."""
+        """POST /api/v1/agent-runtimes — idempotent on request_id (§10/§13).
+
+        Provisions synchronously server-side (clone+boot can take minutes), so
+        this call uses a long timeout (600s) — found live: the 30s default
+        timed out while the job completed successfully server-side.
+        """
         body = {
             "acms_agent_id": acms_agent_id,
             "request_id": request_id or f"acms-{uuid4()}",
@@ -108,7 +113,7 @@ class ServerManagerClient:
             "model_route": model_route,
             "bridge_profile": bridge_profile or {},
         }
-        return ProvisionJob.from_api(self._call("POST", "/api/v1/agent-runtimes", body))
+        return ProvisionJob.from_api(self._call("POST", "/api/v1/agent-runtimes", body, timeout=600))
 
     def get_job(self, job_id: str) -> ProvisionJob:
         d = self._call("GET", f"/api/v1/provisioning-jobs/{job_id}")
