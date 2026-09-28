@@ -44,6 +44,31 @@
     {% endif %}
   </div>
   <div class="card">
+    <h2>Runtime lifecycle</h2>
+    {% if runtime %}
+    <p><strong>Desired:</strong> <span class="status">{{ runtime.desired_state }}</span> &middot; <strong>Actual:</strong> <span class="status conn-{{ 'healthy' if runtime.actual_state == 'RUNNING' else 'unreachable' }}">{{ runtime.actual_state }}</span></p>
+    <p class="muted">Recoveries: {{ runtime.recovery_count }} &middot; last reconcile {{ runtime.last_reconcile_str }}</p>
+    {% if runtime.last_error %}<p class="notice warn">Last error: {{ runtime.last_error }}</p>{% endif %}
+    <p class="muted">Backing VM: {{ runtime.node }}/{{ runtime.vmid }} &middot; state sync: {{ runtime.state_sync_health or "PENDING" }}{% if runtime.last_state_commit_sha %} @ <code>{{ runtime.last_state_commit_sha }}</code>{% endif %}</p>
+    <p class="muted">State branch: <code>{{ runtime.hermes_state_branch or "—" }}</code></p>
+    {% if runtime_controls_enabled %}
+    <p class="muted">Lifecycle controls act on the backing VM via Server Manager (REV4 §12). They are separate from A2A interrupt/cancel/steer. Work assignments are preserved.</p>
+    <div class="runtime-controls">
+      <form method="post" action="/ui/agents/{{ agent.agent_id }}/runtime/start"><button type="submit">Start</button></form>
+      <form method="post" action="/ui/agents/{{ agent.agent_id }}/runtime/stop"><button type="submit">Stop</button></form>
+      <form method="post" action="/ui/agents/{{ agent.agent_id }}/runtime/restart"><button type="submit">Restart</button></form>
+      <form method="post" action="/ui/agents/{{ agent.agent_id }}/runtime/reconcile"><button type="submit">Reconcile now</button></form>
+    </div>
+    {% else %}
+    <p class="muted">Runtime controls unavailable (Server Manager integration not configured).</p>
+    {% endif %}
+    {% elif runtime_error %}
+    <p class="notice warn">{{ runtime_error }}</p>
+    {% else %}
+    <p class="muted">No runtime provisioned for this agent yet (create one via the Server Manager provisioning flow).</p>
+    {% endif %}
+  </div>
+  <div class="card">
     <h2>Capability manifest</h2>
     <ul class="caps">
       {% for cap in capabilities %}

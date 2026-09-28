@@ -14,6 +14,9 @@ os.environ["ACMS_DATABASE_URL"] = f"sqlite:///{TEST_DB}"
 
 from acms.db import Base, engine  # noqa: E402
 from acms import models  # noqa: E402,F401  (register tables on Base.metadata)
+from acms import work_models  # noqa: E402,F401  (register work tables on Base.metadata)
+from acms import telemetry_models  # noqa: E402,F401  (register telemetry tables on Base.metadata)
+from acms import server_manager_api  # noqa: E402,F401  (register provisioning_requests on Base.metadata)
 
 
 @pytest.fixture(autouse=True)

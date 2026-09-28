@@ -155,8 +155,11 @@ async def provision_agent(prov_id: str, db: AsyncSession = Depends(get_session))
     # must be a distinct attempt (attempt counter in the request id).
     attempt_request_id = prov.request_id
     if prov.state == "FAILED":
+        # attempt = monotonic attempt number (1 = original). The retry marker
+        # carries the RETRY COUNT (first retry → |retry:1) so the id is stable
+        # per attempt: attempt N produces |retry:(N-1).
         prov.attempt = (prov.attempt or 1) + 1
-        attempt_request_id = f"{prov.request_id}|retry:{prov.attempt}"
+        attempt_request_id = f"{prov.request_id}|retry:{prov.attempt - 1}"
     try:
         job = client.create_runtime(
             acms_agent_id=agent.agent_id, name=agent.display_name,

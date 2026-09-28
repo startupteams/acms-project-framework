@@ -133,6 +133,10 @@ class ServerManagerClient:
             "POST", f"/api/v1/agent-runtimes/{runtime_id}/desired-state",
             {"desired_state": desired_state, "reason": reason}))
 
+    def reconcile(self, runtime_id: str) -> dict:
+        """POST /api/v1/agent-runtimes/{id}/reconcile — execute desired state now (ARM §10B)."""
+        return self._call("POST", f"/api/v1/agent-runtimes/{runtime_id}/reconcile", expected=(200,))
+
     def destroy_runtime(self, runtime_id: str) -> dict:
         """Destroy the RUNTIME (VM), never the ACMS persistent agent (§10)."""
         return self._call("DELETE", f"/api/v1/agent-runtimes/{runtime_id}", expected=(200,))

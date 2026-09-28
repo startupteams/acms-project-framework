@@ -36,6 +36,10 @@ from .server_manager_api import router as server_manager_router  # noqa: E402
 
 app.include_router(server_manager_router)
 
+from .runtime_api import router as runtime_router  # noqa: E402
+
+app.include_router(runtime_router)
+
 
 @app.get("/health")
 async def health() -> dict[str, str]:
