@@ -15,6 +15,7 @@ Honesty rules (plan §14):
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi.responses import RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -223,5 +224,126 @@ async def agent_detail(
     live["supported_controls"] = supported
     live["unsupported_controls"] = ["pause", "resume"]
 
-    context |= {"live": live, "heartbeat_pending": False}
+    # --- runtime lifecycle (Phase 3; REV4 §12/§13) — Server Manager view ---
+    runtime_view = None
+    runtime_error = None
+    runtime_controls_enabled = False
+    from ..settings import get_settings as _gs
+
+    _s = _gs()
+    if _s.server_manager_base_url and _s.server_manager_token:
+        runtime_controls_enabled = True
+        from ..server_manager_client import ServerManagerClient, ServerManagerError
+
+        try:
+            client = ServerManagerClient(_s.server_manager_base_url, _s.server_manager_token)
+            rts = client.list_runtimes(acms_agent_id=agent_id)
+            if rts:
+                rt = rts[0]
+                runtime_view = {
+                    "runtime_id": rt.runtime_id,
+                    "desired_state": rt.raw.get("desired_state"),
+                    "actual_state": rt.raw.get("actual_state"),
+                    "recovery_count": rt.raw.get("recovery_count"),
+                    "last_error": rt.raw.get("last_error"),
+                    "last_reconcile_str": _fmt_str(rt.raw.get("last_reconcile_at")),
+                    "node": rt.node, "vmid": rt.vmid,
+                    "state_sync_health": rt.raw.get("state_sync_health"),
+                    "hermes_state_branch": rt.raw.get("hermes_state_branch"),
+                    "last_state_commit_sha": (rt.raw.get("last_state_commit_sha") or "")[:8] or None,
+                }
+        except ServerManagerError as e:
+            runtime_error = f"Server Manager unreachable: {e.__class__.__name__}"
+
+    context |= {
+        "live": live,
+        "heartbeat_pending": False,
+        "runtime": runtime_view,
+        "runtime_error": runtime_error,
+        "runtime_controls_enabled": runtime_controls_enabled,
+    }
     return _templates().TemplateResponse(request, "agent_detail.html", context)
+
+
+def _fmt_str(iso: str | None) -> str:
+    if not iso:
+        return "—"
+    try:
+        from datetime import datetime as _dt
+
+        return _dt.fromisoformat(iso.replace("Z", "+00:00")).strftime("%Y-%m-%d %H:%M")
+    except (ValueError, TypeError):
+        return iso or "—"
+
+
+@router.post("/{agent_id}/runtime/{action}")
+async def runtime_action(
+    request: Request,
+    agent_id: str,
+    action: str,
+    user=Depends(current_user),
+    db: AsyncSession = Depends(get_session),
+):
+    """Administrator runtime lifecycle controls (Phase 3; REV4 §12).
+
+    Start/Stop/Restart/Reconcile the agent's runtime via Server Manager.
+    Distinct from A2A interrupt/cancel/steer (plan §9). Requires the admin
+    role; work state is preserved on lifecycle actions.
+    """
+    from .roles import Role
+
+    try:
+        role = Role(user.role)
+    except ValueError:
+        role = None
+    if role is not Role.ADMINISTRATOR:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Administrator role required")
+    if action not in ("start", "stop", "restart", "reconcile"):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="unknown runtime action")
+    agent = await _agent_or_404(db, agent_id)
+
+    from ..settings import get_settings as _gs
+
+    _s = _gs()
+    if not _s.server_manager_base_url or not _s.server_manager_token:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                            detail="Server Manager integration not configured")
+    from ..server_manager_client import ServerManagerClient, ServerManagerError
+
+    client = ServerManagerClient(_s.server_manager_base_url, _s.server_manager_token)
+    try:
+        rts = client.list_runtimes(acms_agent_id=agent_id)
+        if not rts:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                                detail="no runtime provisioned for this agent")
+        runtime_id = rts[0].runtime_id
+        reason = f"UI runtime {action} by {getattr(user, 'username', 'admin')}"
+        if action == "start":
+            client.set_desired_state(runtime_id, "DESIRED_RUNNING", reason)
+            rec = client.reconcile(runtime_id)
+        elif action == "stop":
+            client.set_desired_state(runtime_id, "DESIRED_STOPPED", reason)
+            rec = client.reconcile(runtime_id)
+        elif action == "restart":
+            client.set_desired_state(runtime_id, "DESIRED_STOPPED", reason)
+            client.reconcile(runtime_id)
+            client.set_desired_state(runtime_id, "DESIRED_RUNNING", reason)
+            rec = client.reconcile(runtime_id)
+        else:  # reconcile
+            rec = client.reconcile(runtime_id)
+    except ServerManagerError as e:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY,
+                            detail=f"Server Manager error: {e}")
+
+    # semantic event (best-effort; never blocks the action result)
+    try:
+        from ..telemetry_service import add_event
+
+        await add_event(db, event_type=f"RUNTIME_UI_{action.upper()}", actor_source="ui",
+                        agent_id=agent_id,
+                        summary=f"UI runtime {action}: {rec.get('before')} -> {rec.get('after')} ({rec.get('action')})",
+                        metadata={"runtime_id": runtime_id, "reconcile": rec})
+        await db.commit()
+    except Exception:  # noqa: BLE001 — audit best-effort
+        pass
+    return RedirectResponse(url=f"/ui/agents/{agent_id}", status_code=status.HTTP_303_SEE_OTHER)
