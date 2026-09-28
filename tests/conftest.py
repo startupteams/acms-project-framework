@@ -17,6 +17,8 @@ from acms import models  # noqa: E402,F401  (register tables on Base.metadata)
 from acms import work_models  # noqa: E402,F401  (register work tables on Base.metadata)
 from acms import telemetry_models  # noqa: E402,F401  (register telemetry tables on Base.metadata)
 from acms import server_manager_api  # noqa: E402,F401  (register provisioning_requests on Base.metadata)
+from acms import work_keys  # noqa: E402,F401  (register acms_key_counters on Base.metadata)
+from acms import memory_models  # noqa: E402,F401  (register memory/session offload tables on Base.metadata)
 
 
 @pytest.fixture(autouse=True)
