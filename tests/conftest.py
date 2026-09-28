@@ -19,6 +19,7 @@ from acms import telemetry_models  # noqa: E402,F401  (register telemetry tables
 from acms import server_manager_api  # noqa: E402,F401  (register provisioning_requests on Base.metadata)
 from acms import work_keys  # noqa: E402,F401  (register acms_key_counters on Base.metadata)
 from acms import memory_models  # noqa: E402,F401  (register memory/session offload tables on Base.metadata)
+from acms import economics_models  # noqa: E402,F401  (register engineering-economics tables on Base.metadata)
 
 
 @pytest.fixture(autouse=True)
@@ -31,4 +32,21 @@ def _schema_for_unit_tests():
             await conn.run_sync(Base.metadata.create_all)
 
     asyncio.run(_create())
+    yield
+
+
+@pytest.fixture()
+def clean_db():
+    """Wipe all rows between tests that need isolation (the unit DB is a single
+    shared SQLite file created once per pytest run)."""
+    from sqlalchemy import text
+
+    async def _wipe() -> None:
+        async with engine.begin() as conn:
+            await conn.execute(text("PRAGMA foreign_keys = OFF"))
+            for table in reversed(Base.metadata.sorted_tables):
+                await conn.execute(text(f'DELETE FROM "{table.name}"'))
+            await conn.execute(text("PRAGMA foreign_keys = ON"))
+
+    asyncio.run(_wipe())
     yield

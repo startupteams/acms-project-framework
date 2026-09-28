@@ -88,6 +88,8 @@ class ExecutionSessionRecord(Base):
     # authoritative; see FUTURE_WORK FW-LLM-LOCAL-COST).
     estimated_cloud_cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
     estimated_local_cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # lightweight task classification (REV2 §9B.5) for economics by task type
+    task_category: Mapped[str | None] = mapped_column(String(24), nullable=True)
     context_package_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     last_checkpoint_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     handoff_id: Mapped[str | None] = mapped_column(String(36), nullable=True)

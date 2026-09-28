@@ -71,7 +71,11 @@ def _psql_scalar(pg_url: str, sql: str):
 
 
 def test_fresh_install_chain_to_0007(pg_url):
-    r = _alembic(pg_url, "upgrade", "head")
+    """Clean-DB chain through 0007 (head at the 0007 slice); 0008+ builds on top.
+    Kept as its own revision pin so this slice's proof stays exact."""
+    # start from base so a prior module (e.g. the 0008 test) can't pollute the stamp
+    _alembic(pg_url, "downgrade", "base")
+    r = _alembic(pg_url, "upgrade", "0007_work_budgets")
     assert r.returncode == 0, f"alembic upgrade failed:\n{r.stdout}\n{r.stderr}"
     assert _psql_scalar(pg_url, "select version_num from alembic_version") == "0007_work_budgets"
     # work_budgets table exists with the boolean default intact
@@ -86,7 +90,7 @@ def test_fresh_install_chain_to_0007(pg_url):
     assert _psql_scalar(
         pg_url,
         "select count(*) from information_schema.tables where table_name='work_budgets'") == 0
-    r3 = _alembic(pg_url, "upgrade", "head")
+    r3 = _alembic(pg_url, "upgrade", "0007_work_budgets")
     assert r3.returncode == 0, f"re-upgrade 0006→0007 failed:\n{r3.stdout}\n{r3.stderr}"
     assert _psql_scalar(pg_url, "select version_num from alembic_version") == "0007_work_budgets"
     # cost-split columns landed on execution_sessions
