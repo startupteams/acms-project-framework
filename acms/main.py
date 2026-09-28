@@ -56,6 +56,10 @@ from .dispatch_api import router as dispatch_router  # noqa: E402
 
 app.include_router(dispatch_router)
 
+from .sse_api import router as sse_router  # noqa: E402
+
+app.include_router(sse_router)
+
 from .economics_api import router as economics_router  # noqa: E402
 
 app.include_router(economics_router)

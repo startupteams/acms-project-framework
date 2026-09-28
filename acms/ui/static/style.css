@@ -136,3 +136,15 @@ pre.markdown { font-family: ui-monospace, monospace; overflow-x: auto; backgroun
 .cap-yes::before { content: "✓ "; color: var(--ok, #1a7f37); font-weight: 700; }
 .cap-no { color: var(--muted, #6b7280); }
 .cap-no::before { content: "· "; font-weight: 700; }
+
+/* Attention page (REV2 Phase D) */
+.attention-table { width: 100%; border-collapse: collapse; margin-top: 1rem; }
+.attention-table th, .attention-table td { text-align: left; padding: 0.45rem 0.6rem; border-bottom: 1px solid var(--border, #ddd); vertical-align: top; }
+.attention-table th { font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.04em; opacity: 0.75; }
+.badge { display: inline-block; padding: 0.1rem 0.5rem; border-radius: 999px; font-size: 0.78rem; font-weight: 600; }
+.sev-critical { background: #b91c1c; color: #fff; }
+.sev-high { background: #c2410c; color: #fff; }
+.sev-medium { background: #a16207; color: #fff; }
+.sev-low { background: #4b5563; color: #fff; }
+.filters a { margin-right: 0.5rem; }
+.filters a.active { font-weight: 700; text-decoration: underline; }
