@@ -59,9 +59,11 @@ def install_ui(app) -> None:
     app.include_router(router)
     from .work_routes import router as work_router
     from .agent_routes import router as agent_router
+    from .attention_routes import router as attention_router
 
     app.include_router(work_router)
     app.include_router(agent_router)
+    app.include_router(attention_router)
 
 
 def _deny_unmapped(request: Request, username: str) -> Response:

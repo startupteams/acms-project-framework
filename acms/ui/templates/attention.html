@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block title %}Attention — ACMS{% endblock %}
+{% block content %}
+<h1>Attention</h1>
+<p class="muted">Derived from the durable semantic event log (lookback {{ hours }}h).
+Hard-budget crossings rank critical; token telemetry never appears here.
+Live stream: <code>GET /api/v1/events/stream</code> (SSE).</p>
+<p class="filters">
+  Show:
+  <a class="{% if not severity %}active{% endif %}" href="/ui/attention?hours={{ hours }}">all</a>
+  {% for s in ("critical", "high", "medium") %}
+    <a class="{% if severity == s %}active{% endif %}" href="/ui/attention?severity={{ s }}&hours={{ hours }}">{{ s }}</a>
+  {% endfor %}
+</p>
+<table class="attention-table">
+  <thead>
+    <tr><th>Severity</th><th>Event</th><th>Agent</th><th>When</th><th>Summary</th></tr>
+  </thead>
+  <tbody>
+    {% for i in items %}
+    <tr>
+      <td><span class="badge sev-{{ i.severity }}">{{ i.severity }}</span></td>
+      <td><code>{{ i.event_type }}</code></td>
+      <td>{% if i.agent_id %}<a href="/ui/agents/{{ i.agent_id }}">{{ i.agent_id[:8] }}</a>{% else %}—{% endif %}</td>
+      <td>{{ i.timestamp_display }}</td>
+      <td>{{ i.summary }}</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="5" class="muted">No attention items in the window.</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endblock %}

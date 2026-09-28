@@ -75,17 +75,31 @@ class AttentionItem(BaseModel):
     acknowledged: bool = False
 
 
-@router.get("", response_model=list[AttentionItem])
-async def attention_feed(
-    db: AsyncSession = Depends(get_session),
-    hours: int = Query(default=DEFAULT_LOOKBACK_HOURS, ge=1, le=24 * 30),
-    severity: str | None = Query(default=None),
-    include_acknowledged: bool = False,
-):
-    """Derived Attention feed: recent semantic events that need human/Executive
-    eyes. Deterministic derivation from the audit log — no separate state to
-    drift out of sync. BUDGET_THRESHOLD_CROSSED items whose metadata says HARD
-    rank high; the summary already carries the state."""
+def _derive(r: AgentEventRecord, severity: str | None):
+    """Map one durable event row to an Attention dict (shared API+UI)."""
+    sev = SEVERITY.get(r.event_type, "medium")
+    if r.event_type == "BUDGET_THRESHOLD_CROSSED" and "HARD_EXCEEDED" in (r.summary or ""):
+        sev = "critical"
+    if severity and sev != severity:
+        return None
+    return {
+        "event_id": r.event_id,
+        "sequence": r.sequence,
+        "timestamp": r.timestamp.isoformat() if r.timestamp else None,
+        "timestamp_display": r.timestamp.strftime("%m-%d %H:%M") if r.timestamp else "—",
+        "event_type": r.event_type,
+        "severity": sev,
+        "agent_id": r.agent_id,
+        "work_key": r.work_key,
+        "assignment_key": r.assignment_key,
+        "summary": r.summary,
+    }
+
+
+async def attention_items(db: AsyncSession, *, hours: int = DEFAULT_LOOKBACK_HOURS,
+                          severity: str | None = None) -> list[dict]:
+    """Derived Attention feed as plain dicts — one derivation shared by the
+    JSON API, the UI page, and any future consumer (single source of truth)."""
     since = datetime.now(timezone.utc) - timedelta(hours=hours)
     stmt = (
         select(AgentEventRecord)
@@ -97,14 +111,24 @@ async def attention_feed(
     rows = (await db.execute(stmt)).scalars().all()
     items = []
     for r in rows:
-        sev = SEVERITY.get(r.event_type, "medium")
-        if r.event_type == "BUDGET_THRESHOLD_CROSSED" and "HARD_EXCEEDED" in (r.summary or ""):
-            sev = "critical"
-        if severity and sev != severity:
-            continue
-        items.append(AttentionItem(
-            event_id=r.event_id, sequence=r.sequence,
-            timestamp=r.timestamp.isoformat() if r.timestamp else None,
-            event_type=r.event_type, severity=sev, agent_id=r.agent_id,
-            summary=r.summary))
+        d = _derive(r, severity)
+        if d is not None:
+            items.append(d)
     return items
+
+
+@router.get("", response_model=list[AttentionItem])
+async def attention_feed(
+    db: AsyncSession = Depends(get_session),
+    hours: int = Query(default=DEFAULT_LOOKBACK_HOURS, ge=1, le=24 * 30),
+    severity: str | None = Query(default=None),
+    include_acknowledged: bool = False,
+):
+    """Derived Attention feed: recent semantic events that need human/Executive
+    eyes. Deterministic derivation from the audit log — no separate state to
+    drift out of sync. BUDGET_THRESHOLD_CROSSED items whose metadata says HARD
+    rank high; the summary already carries the state."""
+    dicts = await attention_items(db, hours=hours, severity=severity)
+    return [AttentionItem(**{k: d[k] for k in
+                             ("event_id", "sequence", "timestamp", "event_type",
+                              "severity", "agent_id", "summary")}) for d in dicts]
