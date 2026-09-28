@@ -90,6 +90,8 @@ class SessionTelemetryUpdate(BaseModel):
     max_context_tokens: int | None = None
     cumulative_api_tokens: int | None = None
     estimated_cost_usd: float | None = None
+    estimated_cloud_cost_usd: float | None = None
+    estimated_local_cost_usd: float | None = None
     model_id: str | None = None
     provider: str | None = None
 
@@ -135,6 +137,8 @@ class SessionView(BaseModel):
     context_utilization_percent: float | None
     cumulative_api_tokens: int | None
     estimated_cost_usd: float | None
+    estimated_cloud_cost_usd: float | None
+    estimated_local_cost_usd: float | None
     rotation_advisory: str | None
     context_package_id: str | None
     last_checkpoint_at: str | None
@@ -177,6 +181,8 @@ def _sess_view(r: ExecutionSessionRecord) -> SessionView:
         context_utilization_percent=r.context_utilization_percent,
         cumulative_api_tokens=r.cumulative_api_tokens,
         estimated_cost_usd=r.estimated_cost_usd,
+        estimated_cloud_cost_usd=r.estimated_cloud_cost_usd,
+        estimated_local_cost_usd=r.estimated_local_cost_usd,
         rotation_advisory=r.rotation_advisory,
         context_package_id=r.context_package_id,
         last_checkpoint_at=_iso(r.last_checkpoint_at),
@@ -251,6 +257,10 @@ async def update_session_telemetry(session_id: str, body: SessionTelemetryUpdate
         rec.cumulative_api_tokens = body.cumulative_api_tokens
     if body.estimated_cost_usd is not None and body.estimated_cost_usd >= 0:
         rec.estimated_cost_usd = body.estimated_cost_usd
+    if body.estimated_cloud_cost_usd is not None and body.estimated_cloud_cost_usd >= 0:
+        rec.estimated_cloud_cost_usd = body.estimated_cloud_cost_usd
+    if body.estimated_local_cost_usd is not None and body.estimated_local_cost_usd >= 0:
+        rec.estimated_local_cost_usd = body.estimated_local_cost_usd
     prev = rec.rotation_advisory
     rec.rotation_advisory = compute_advisory(
         rec.context_utilization_percent, rec.max_context_tokens,
@@ -260,6 +270,12 @@ async def update_session_telemetry(session_id: str, body: SessionTelemetryUpdate
                         agent_id=rec.agent_id,
                         summary=f"Advisory {prev or 'GREEN'} -> {rec.rotation_advisory} at {rec.context_utilization_percent}% context",
                         metadata={"session_id": session_id, "advisory": rec.rotation_advisory})
+    # REQ-059 soft/hard evaluation: cost telemetry changed → re-evaluate the
+    # Work's budget (emits BUDGET_THRESHOLD_CROSSED once per transition).
+    if rec.work_item_id:
+        from . import budget_service
+
+        await budget_service.refresh_budget_state(db, rec.work_item_id)
     await db.commit()
     return _sess_view(rec)
 

@@ -117,6 +117,85 @@
   {% endif %}
 </section>
 
+<section class="panel">
+  <h2>Budget (REQ-059)</h2>
+  {% if budget %}
+  <table class="data">
+    <thead><tr><th>Soft (USD)</th><th>Hard (USD)</th><th>State</th><th>Override</th><th>Updated</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>{{ budget.soft_budget_usd if budget.soft_budget_usd is not none else "—" }}</td>
+        <td>{{ budget.hard_budget_usd if budget.hard_budget_usd is not none else "—" }}</td>
+        <td><span class="status status-{{ budget.budget_state|lower }}">{{ budget.budget_state }}</span></td>
+        <td>
+          {% if budget.override_active %}
+          yes — {{ budget.override_by }}: {{ budget.override_reason }}
+          {% else %}no{% endif %}
+        </td>
+        <td class="muted">{{ budget.updated_at.strftime('%Y-%m-%d %H:%M') if budget.updated_at else '—' }}</td>
+      </tr>
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted">No budget set for this Work Item.</p>
+  {% endif %}
+
+  <h3>Spend rollup (from execution-session telemetry)</h3>
+  <table class="data">
+    <thead><tr><th>Sessions</th><th>Open</th><th>API tokens</th><th>Est. cost (USD)</th><th>Cloud (USD)</th><th>Local usage</th><th>Unknown / partial cost</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>{{ rollup.session_count }}</td>
+        <td>{{ rollup.open_sessions }}</td>
+        <td>{{ rollup.cumulative_api_tokens }}</td>
+        <td>{{ "%.4f"|format(rollup.estimated_cost_usd) if rollup.estimated_cost_usd else "0" }}</td>
+        <td>{{ "%.4f"|format(rollup.estimated_cloud_cost_usd) if rollup.estimated_cloud_cost_usd else "0" }}</td>
+        <td>{{ rollup.sessions_with_local_usage }} (USD-equivalent: not yet authoritative)</td>
+        <td>{{ rollup.sessions_unknown_cost }} / {{ rollup.sessions_partial_cost }}</td>
+      </tr>
+    </tbody>
+  </table>
+  {% if rollup.model_breakdown %}
+  <h3>By model</h3>
+  <table class="data">
+    <thead><tr><th>Model</th><th>Sessions</th><th>API tokens</th><th>Est. cost (USD)</th><th>Unknown-cost sessions</th></tr></thead>
+    <tbody>
+      {% for model, m in rollup.model_breakdown.items() %}
+      <tr>
+        <td>{{ model }}</td>
+        <td>{{ m.sessions }}</td>
+        <td>{{ m.cumulative_api_tokens }}</td>
+        <td>{{ "%.4f"|format(m.estimated_cost_usd) if m.estimated_cost_usd else "0" }}</td>
+        <td>{{ m.sessions_unknown_cost }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+
+  {% if user.role == 'administrator' %}
+  <details>
+    <summary>Set / update budget</summary>
+    <form method="post" action="/ui/work/{{ item.work_item_id }}/budget" class="stacked-form">
+      <label>Soft budget (USD) <input name="soft_budget_usd" value="{{ budget.soft_budget_usd if budget and budget.soft_budget_usd is not none else "" }}" placeholder="e.g. 5.00"></label>
+      <label>Hard budget (USD) <input name="hard_budget_usd" value="{{ budget.hard_budget_usd if budget and budget.hard_budget_usd is not none else "" }}" placeholder="e.g. 10.00"></label>
+      <button type="submit">Save budget</button>
+      <p class="muted">Soft: advisory (checkpoint/review/reroute). Hard: blocks NEW cloud execution; never interrupts in-flight work. Empty = no threshold.</p>
+    </form>
+  </details>
+  {% if budget and budget.budget_state == 'HARD_EXCEEDED' and not budget.override_active %}
+  <details>
+    <summary>Override hard limit (audited)</summary>
+    <form method="post" action="/ui/work/{{ item.work_item_id }}/budget/override" class="stacked-form">
+      <label>Reason <textarea name="override_reason" rows="2" required></textarea></label>
+      <button type="submit">Override hard block</button>
+      <p class="muted">One-shot: cleared the next time the budget is set. Recorded in the audit event log.</p>
+    </form>
+  </details>
+  {% endif %}
+  {% endif %}
+</section>
+
 {% if assigned_agent %}
 <section class="panel">
   <h2>Assigned agent routines</h2>

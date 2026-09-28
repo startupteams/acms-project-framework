@@ -44,6 +44,10 @@ from .memory_api import router as memory_router  # noqa: E402
 
 app.include_router(memory_router)
 
+from .budget_api import router as budget_router  # noqa: E402
+
+app.include_router(budget_router)
+
 
 @app.get("/health")
 async def health() -> dict[str, str]:
