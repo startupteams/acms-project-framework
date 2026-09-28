@@ -52,6 +52,10 @@ from .attention_api import router as attention_router  # noqa: E402
 
 app.include_router(attention_router)
 
+from .dispatch_api import router as dispatch_router  # noqa: E402
+
+app.include_router(dispatch_router)
+
 from .economics_api import router as economics_router  # noqa: E402
 
 app.include_router(economics_router)
