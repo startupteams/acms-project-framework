@@ -1,4 +1,5 @@
 """Memory/Session Offload models (flight plan Phase 8; ACMS-REQ-055..058).
+Budget models: ACMS-REQ-059 (REV2 plan §4).
 
 New concepts (checked against existing schema — extends, never duplicates):
 - ExecutionSession: one disposable reasoning session under a persistent agent
@@ -9,6 +10,8 @@ New concepts (checked against existing schema — extends, never duplicates):
 
 Economic rotation is ADVISORY this slice (GREEN/MONITOR/CHECKPOINT_RECOMMENDED/
 ROTATE_RECOMMENDED) — no auto-kill of active sessions (plan §13).
+Budget tracking lives on the Work Item (REQ-059): soft_usd + hard_usd +
+budget_state; per-Work rollups derive from session telemetry.
 """
 from __future__ import annotations
 
@@ -22,6 +25,41 @@ from .db import Base
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+# Budget states (REQ-059): OK → SOFT_EXCEEDED (advisory) → HARD_EXCEEDED
+# (blocks new cloud execution absent an audited override).
+BUDGET_OK = "OK"
+BUDGET_SOFT_EXCEEDED = "SOFT_EXCEEDED"
+BUDGET_HARD_EXCEEDED = "HARD_EXCEEDED"
+
+
+class WorkBudgetRecord(Base):
+    """Per-Work cloud budget (REQ-059). Separate table: Work Items keep their
+    scope semantics; budget is execution-economics, versioned independently.
+
+    Hard threshold blocks NEW cloud execution (never interrupts in-flight
+    atomic work); override requires an explicit audited call.
+    """
+
+    __tablename__ = "work_budgets"
+
+    work_item_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    soft_budget_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
+    hard_budget_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # OK | SOFT_EXCEEDED | HARD_EXCEEDED
+    budget_state: Mapped[str] = mapped_column(String(20), default=BUDGET_OK)
+    # audited override of a hard block (one-shot flag; cleared on next budget set)
+    override_active: Mapped[bool] = mapped_column(default=False)
+    override_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    override_reason: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    overridden_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now,
+                                                 onupdate=_now)
+
+    @staticmethod
+    def now() -> datetime:
+        return _now()
 
 
 class ExecutionSessionRecord(Base):
@@ -45,6 +83,11 @@ class ExecutionSessionRecord(Base):
     estimated_cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
     # advisory state (REQ-059 soft side): GREEN|MONITOR|CHECKPOINT_RECOMMENDED|ROTATE_RECOMMENDED
     rotation_advisory: Mapped[str | None] = mapped_column(String(24), nullable=True)
+    # Reserved cost split (REV2 §4.1): cloud vs local. Nullable — unknown cost
+    # stays UNKNOWN, never zero/fabricated (local USD-equivalent not yet
+    # authoritative; see FUTURE_WORK FW-LLM-LOCAL-COST).
+    estimated_cloud_cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
+    estimated_local_cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
     context_package_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     last_checkpoint_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     handoff_id: Mapped[str | None] = mapped_column(String(36), nullable=True)

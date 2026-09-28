@@ -24,6 +24,7 @@ from ..work_models import (
     WorkItemStatus,
     WorkItemUpdate,
 )
+from .. import budget_service
 from .. import work_service
 from .roles import Role
 from .session_auth import current_user
@@ -131,6 +132,10 @@ async def work_detail(
     tasks = await work_service.list_execution_tasks(db, work_item_id)
     handoffs = await work_service.list_handoffs(db, work_item_id)
 
+    # Budget panel (REQ-059): rollup + budget row (may be unset — show honestly).
+    budget = await budget_service.get_budget(db, work_item_id)
+    rollup = await budget_service.work_budget_rollup(db, work_item_id)
+
     # Assignable agents: any registered agent with no ACTIVE assignment.
     all_agents = await list_agents(db)
     busy_ids = {
@@ -164,6 +169,8 @@ async def work_detail(
         "available_agents": available_agents,
         "statuses_default": _STATUSES,
         "close_statuses": _CLOSE_STATUSES,
+        "budget": budget,
+        "rollup": rollup,
         "error": request.query_params.get("error"),
     }
     return _templates().TemplateResponse(request, "work_detail.html", context)
@@ -294,6 +301,60 @@ async def work_create_handoff(
     )
     if record is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="work item not found")
+    return RedirectSeeOther(f"/ui/work/{work_item_id}")
+
+
+@router.post("/{work_item_id}/budget")
+async def work_set_budget(
+    request: Request,
+    work_item_id: str,
+    soft_budget_usd: str = Form(""),
+    hard_budget_usd: str = Form(""),
+    user=Depends(current_user),
+    db: AsyncSession = Depends(get_session),
+):
+    """Set/update the Work budget (REQ-059). Administrator-only."""
+    _require_admin(user)
+
+    def _parse(raw: str) -> float | None:
+        raw = (raw or "").strip()
+        if raw == "":
+            return None
+        val = float(raw)
+        if val < 0:
+            raise ValueError("negative budget")
+        return val
+
+    try:
+        soft = _parse(soft_budget_usd)
+        hard = _parse(hard_budget_usd)
+        if soft is not None and hard is not None and soft > hard:
+            raise ValueError("soft exceeds hard")
+        await budget_service.set_budget(db, work_item_id, soft_budget_usd=soft,
+                                        hard_budget_usd=hard, actor=user.username)
+    except ValueError as exc:
+        return RedirectWithError(f"/ui/work/{work_item_id}", f"invalid budget: {exc}")
+    return RedirectSeeOther(f"/ui/work/{work_item_id}")
+
+
+@router.post("/{work_item_id}/budget/override")
+async def work_override_budget(
+    request: Request,
+    work_item_id: str,
+    override_reason: str = Form(...),
+    user=Depends(current_user),
+    db: AsyncSession = Depends(get_session),
+):
+    """Audited one-shot hard-limit override (REQ-059). Administrator-only."""
+    _require_admin(user)
+    reason = override_reason.strip()
+    if len(reason) < 4:
+        return RedirectWithError(f"/ui/work/{work_item_id}", "override reason required")
+    try:
+        await budget_service.override_hard_limit(db, work_item_id,
+                                                 override_by=user.username, reason=reason)
+    except ValueError as exc:
+        return RedirectWithError(f"/ui/work/{work_item_id}", str(exc))
     return RedirectSeeOther(f"/ui/work/{work_item_id}")
 
 
