@@ -35,6 +35,16 @@ class Settings(BaseSettings):
     context_high_percent: int = 85
     context_critical_percent: int = 95
 
+    # Session-rotation advisory thresholds (REV2 plan §7): CONFIGURABLE and
+    # EXPERIMENTAL — starting points for empirical cost-vs-output tuning, not
+    # final policy. Rotation is advisory-only; auto-rotation is feature-flagged
+    # OFF (session_rotation_auto_enabled=False) and must never fire on context
+    # threshold alone.
+    session_advisory_monitor_percent: int = 50
+    session_advisory_checkpoint_percent: int = 70
+    session_advisory_rotate_percent: int = 85
+    session_rotation_auto_enabled: bool = False
+
     # Agent Bridge targets (plan §15): JSON list of {agent_id, base_url,
     # api_key}. Keys live in .env/config, never committed (plan §18).
     bridge_targets_json: str = ""

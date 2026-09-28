@@ -207,3 +207,63 @@ is open, resume or roll back automatically; if stale, exit maintenance mode.
 
 - Requires ADR-0009 release tooling (this PR) deployed first.
 - Never auto-restore a DB without the transaction guards (plan §29).
+
+## FW-LLM-LOCAL-COST - Authoritative local-inference USD-equivalent cost
+
+**Proposed requirement:** ACMS-REQ-FUTURE-ECON-1
+**Sprint Priority:** 3
+**Provenance:** Agent-Discovered (REV2 plan §4.1/§9B.4)
+
+Budget rollups and economics reports currently treat local inference cost as
+UNKNOWN (nullable columns / `local_cost_usd=None`), because MARION-hosted
+models have no authoritative USD-equivalent accounting. Until LLM Manager
+exposes a defensible allocation (energy + amortized hardware + ops), local
+usage stays usage-only (`local_compute_seconds`, tokens) and is never blended
+into cost-per-accepted metrics. A proposed approach: LLM Manager publishes a
+configurable $/GPU-hour allocation rate; ACMS consumes it as telemetry, never
+as an invented constant.
+
+**Guardrails**
+- Never fabricate a local $ figure to make rollups look complete.
+- When the rate arrives, it applies prospectively; historical entries keep
+  their UNKNOWN status.
+
+## FW-AB-BAKEOFF - Controlled model A/B bake-off support
+
+**Proposed requirement:** ACMS-REQ-FUTURE-ECON-2
+**Sprint Priority:** 3
+**Provenance:** Human-Directed (REV2 plan §9B.7)
+
+Schema support for controlled comparisons already exists implicitly
+(`pr_outcomes` + `cost_attribution` + `requirement_links` + task_category
+filtering). What remains: a small "bake-off spec" record that pins the
+comparison envelope — same starting commit, same execution plan, same tool
+permissions, same acceptance criteria, same time/budget envelope — and links
+the participating outcome rows. All runs including failures are recorded.
+Model names are DATA (outcome rows), never hard-coded into the economic model;
+the first suggested challenger set (current default cloud worker, one cheaper
+challenger, one stronger/higher-cost challenger) is a human decision at
+bake-off time.
+
+**Guardrails**
+- No automatic heavy benchmark spend; each bake-off needs explicit human approval.
+- Report side-by-side cost-per-accepted-requirement with first-pass rates.
+
+## FW-ROUTING-ECON - Economics-aware future model routing
+
+**Proposed requirement:** ACMS-REQ-FUTURE-ECON-3
+**Sprint Priority:** 4
+**Provenance:** Human-Directed (REV2 plan §9B.8)
+
+Architecture direction (not autonomous routing yet): future model routing
+should optimize **historical cost per accepted requirement/PR for similar
+work** (task_category + repo + scope similarity), subject to quality,
+security, latency, and policy constraints. Raw token price alone must never be
+the routing objective. This needs the economics report data to accumulate
+first (this PR's instrumentation) plus a routing-policy ADR before any
+implementation.
+
+**Guardrails**
+- Requires a minimum sample of accepted outcomes per model/task-class before
+  routing decisions would be defensible.
+- Never route away from a model mid-work-item (stability of the execution context).

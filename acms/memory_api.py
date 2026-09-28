@@ -46,19 +46,42 @@ ADVISORY_MONITOR = "MONITOR"
 ADVISORY_CHECKPOINT = "CHECKPOINT_RECOMMENDED"
 ADVISORY_ROTATE = "ROTATE_RECOMMENDED"
 
+# Session-rotation policy (REV2 plan §7): thresholds are CONFIGURABLE and
+# explicitly EXPERIMENTAL. The defaults below are starting points for empirical
+# tuning (cost vs useful completed work), NOT final policy — GLM 5.3 Flash has
+# produced useful work beyond 300k context, and fixed thresholds must never be
+# the sole reason to auto-rotate. Auto-rotation itself is FEATURE-FLAGGED OFF.
+ADVISORY_POLICY_VERSION = "advisory-experimental-v1"
+
 
 def compute_advisory(context_pct: float | None, max_context: int | None,
                      estimated_cost: float | None = None,
-                     soft_budget_usd: float | None = None) -> str:
-    """Advisory from context utilization (context thresholds 70/85/95 are the
-    ADR-0010 warning bands; rotation recommends at HIGH/CRITICAL)."""
+                     soft_budget_usd: float | None = None,
+                     *,
+                     monitor_pct: int | None = None,
+                     checkpoint_pct: int | None = None,
+                     rotate_pct: int | None = None) -> str:
+    """Advisory from context utilization.
+
+    Thresholds default to the ADR-0010 warning bands (70/85) but are
+    overridable per call from Settings (ACMS_SESSION_ADVISORY_* env) so the
+    policy can be tuned empirically without code changes. None-context → GREEN
+    (no telemetry → no advisory claim, never fabricated).
+    """
     if context_pct is None or max_context is None:
         return ADVISORY_GREEN  # no telemetry → no advisory claim
-    if context_pct >= 85:
+    if rotate_pct is None or checkpoint_pct is None or monitor_pct is None:
+        from .settings import get_settings
+
+        s = get_settings()
+        monitor_pct = s.session_advisory_monitor_percent
+        checkpoint_pct = s.session_advisory_checkpoint_percent
+        rotate_pct = s.session_advisory_rotate_percent
+    if context_pct >= rotate_pct:
         return ADVISORY_ROTATE
-    if context_pct >= 70:
+    if context_pct >= checkpoint_pct:
         return ADVISORY_CHECKPOINT
-    if context_pct >= 50:
+    if context_pct >= monitor_pct:
         return ADVISORY_MONITOR
     return ADVISORY_GREEN
 
@@ -83,6 +106,7 @@ class SessionCreate(BaseModel):
     model_id: str | None = None
     provider: str | None = None
     context_package_id: str | None = None
+    task_category: str | None = None
 
 
 class SessionTelemetryUpdate(BaseModel):
@@ -139,6 +163,7 @@ class SessionView(BaseModel):
     estimated_cost_usd: float | None
     estimated_cloud_cost_usd: float | None
     estimated_local_cost_usd: float | None
+    task_category: str | None
     rotation_advisory: str | None
     context_package_id: str | None
     last_checkpoint_at: str | None
@@ -183,6 +208,7 @@ def _sess_view(r: ExecutionSessionRecord) -> SessionView:
         estimated_cost_usd=r.estimated_cost_usd,
         estimated_cloud_cost_usd=r.estimated_cloud_cost_usd,
         estimated_local_cost_usd=r.estimated_local_cost_usd,
+        task_category=r.task_category,
         rotation_advisory=r.rotation_advisory,
         context_package_id=r.context_package_id,
         last_checkpoint_at=_iso(r.last_checkpoint_at),
@@ -198,7 +224,8 @@ async def create_session(body: SessionCreate, db: AsyncSession = Depends(get_ses
         work_item_id=body.work_item_id, assignment_id=body.assignment_id,
         a2a_task_id=body.a2a_task_id, harness_session_id=body.harness_session_id,
         status="OPEN", model_id=body.model_id, provider=body.provider,
-        context_package_id=body.context_package_id, started_at=_now(),
+        context_package_id=body.context_package_id, task_category=body.task_category,
+        started_at=_now(),
     )
     db.add(rec)
     await add_event(db, event_type="EXECUTION_SESSION_OPENED", actor_source="memory_offload",
@@ -444,3 +471,35 @@ async def rotate_session(work_item_id: str, body: dict, db: AsyncSession = Depen
                               "prior_session_id": prior_session_id})
     await db.commit()
     return _pkg_view(rec)
+
+
+# ------------------------------------------------- rotation-required signal (§7)
+@router.post("/sessions/{session_id}/rotation-required", status_code=201)
+async def emit_rotation_required(session_id: str, body: dict,
+                                 db: AsyncSession = Depends(get_session)):
+    """Durable SESSION_ROTATION_REQUIRED event for orchestrators (REV2 §7).
+
+    Emitted when a harness lacks a supported create-fresh-session operation OR
+    when policy (future) decides rotation is due. ACMS never fakes harness
+    rotation (HARNESS_CONTROL_MAPPING rule); an orchestrator fulfills this by
+    creating a new harness session + calling /rotate for the package.
+
+    Hermes 0.17.0 note: `POST /api/sessions` IS supported (live-verified,
+    HARNESS_CONTROL_MAPPING test #8), so agents on that harness can fulfill
+    rotation directly; this event remains the harness-independent contract.
+    """
+    rec = await db.get(ExecutionSessionRecord, session_id)
+    if rec is None:
+        raise HTTPException(status_code=404, detail="session not found")
+    reason = (body.get("reason") or "unspecified")[:200]
+    await add_event(db, event_type="SESSION_ROTATION_REQUIRED",
+                    actor_source="memory_offload", agent_id=rec.agent_id,
+                    summary=f"Session rotation required (reason: {reason}) for work "
+                            f"{rec.work_item_id or '—'} — orchestrator must create a fresh session",
+                    metadata={"session_id": session_id,
+                              "work_item_id": rec.work_item_id,
+                              "reason": reason,
+                              "policy_version": ADVISORY_POLICY_VERSION})
+    await db.commit()
+    return {"status": "emitted", "session_id": session_id,
+            "event_type": "SESSION_ROTATION_REQUIRED"}
