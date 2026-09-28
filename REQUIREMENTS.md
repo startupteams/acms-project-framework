@@ -612,6 +612,132 @@ ACMS shall collect available current-context usage telemetry and display used to
 - Warning levels (ELEVATED/HIGH/CRITICAL thresholds) are configurable and visible.
 - Explicit context-overflow/payload-too-large failures reported by the harness/provider are recorded as significant events.
 
+### ACMS-REQ-055 - Work continuity across disposable execution sessions
+
+**Sprint Priority:** 1
+
+**Requirement**
+
+A Work Item and its Program shall survive across many disposable execution sessions. Ending or rotating an execution session must never end the Work.
+
+**Acceptance criteria**
+
+- Work Item state is owned by ACMS, not by any single harness session.
+- Closing a session leaves the Work Item and its assignment active.
+- A new session can resume the same Work with a compact reconstructed context.
+
+**Provenance:** Human-Directed (AI–Human SOP, 2026-09-27; REV4-aligned).
+
+### ACMS-REQ-056 - Explicit execution Context Packages
+
+**Sprint Priority:** 1
+
+**Requirement**
+
+ACMS shall record the selected context supplied to each execution session as a durable Context Package with source references.
+
+**Acceptance criteria**
+
+- Each session links to the Context Package it received.
+- Packages reference (not necessarily duplicate) source material where stable references suffice.
+- Assembled-at time, estimated token count, and policy/version are recorded.
+
+**Provenance:** Human-Directed (AI–Human SOP, 2026-09-27).
+
+### ACMS-REQ-057 - Handoff completeness before rotation
+
+**Sprint Priority:** 1
+
+**Requirement**
+
+Session rotation shall be gated on a verifiable handoff that covers Work ID, status, Git state, tests, deployment, decisions, debt, remaining work, next action, and artifact references.
+
+**Acceptance criteria**
+
+- A handoff-completeness validator exists and its result is recorded.
+- Rotation remains advisory until policy hardens, but completeness is always measurable.
+
+**Provenance:** Human-Directed (AI–Human SOP, 2026-09-27).
+
+### ACMS-REQ-058 - Economic execution-session telemetry
+
+**Sprint Priority:** 1
+
+**Requirement**
+
+ACMS shall track, separately and without fabrication: current context, max context, utilization, cumulative API tokens, estimated spend, session age, and context growth rate per execution session.
+
+**Acceptance criteria**
+
+- Current-context metrics remain distinct from cumulative API tokens/spend (extends REQ-054).
+- Missing source data is surfaced as UNKNOWN, never estimated into existence.
+
+**Provenance:** Human-Directed (AI–Human SOP, 2026-09-27).
+
+### ACMS-REQ-059 - Work/session cloud budgets
+
+**Sprint Priority:** 2
+
+**Requirement**
+
+Work Items shall support soft and hard cloud-execution budgets. Soft-threshold crossing triggers checkpoint/review/reroute; hard-threshold crossing blocks NEW cloud execution without an authorized override.
+
+**Acceptance criteria**
+
+- Soft threshold produces a semantic event and an Attention/advisory.
+- Hard threshold never interrupts in-flight atomic work; it blocks new cloud execution.
+- Overrides are explicit and audited.
+
+**Provenance:** Human-Directed (AI–Human SOP, 2026-09-27).
+
+### ACMS-REQ-060 - Relevant-context selection
+
+**Sprint Priority:** 2
+
+**Requirement**
+
+Context Packages shall select relevant hierarchical context rather than injecting everything; selection policy is versioned.
+
+**Acceptance criteria**
+
+- Packages reference which sources were selected and why (policy/version).
+- Unrelated context is not force-injected into every session.
+
+**Provenance:** Human-Directed (AI–Human SOP, 2026-09-27).
+
+### ACMS-REQ-061 - Compact upward reporting
+
+**Sprint Priority:** 2
+
+**Requirement**
+
+Agents shall prefer compact semantic summaries plus artifact references over full logs/diffs when reporting to ACMS.
+
+**Acceptance criteria**
+
+- Event summaries are bounded-length semantic statements.
+- Large payloads live as artifact references, not inline event bodies.
+
+**Provenance:** Human-Directed (AI–Human SOP, 2026-09-27).
+
+### ACMS-REQ-062 - Disposable Executive Agent sessions
+
+**Sprint Priority:** 2
+
+**Requirement**
+
+Executive Agents keep a persistent identity with fresh reasoning sessions, reconstructed from ACMS state and handoffs rather than a giant perpetual session.
+
+**Acceptance criteria**
+
+- Persistent identity (ACMS agent) is independent of session lifetime.
+- Reconstruction relies on ACMS state + handoffs (REQ-055..057), not on session transcripts.
+
+**Architecture statement (normative):**
+`ChatGPT remembers WHY; ACMS remembers WHAT/WHO/STATUS/COST/RESULT; Git remembers WHAT CHANGED; Hermes temporarily remembers HOW.` ACMS does NOT replace Human+ChatGPT durable design memory.
+
+**Provenance:** Human-Directed (AI–Human SOP, 2026-09-27).
+
 ---
 
 ## Feature Set: Security and External-Agent Isolation
