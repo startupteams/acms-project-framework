@@ -31,6 +31,8 @@ router = APIRouter(prefix="/api/v1/events", dependencies=[Depends(require_admin_
 # Semantic event types eligible for streaming (plan §6-D2 recommended set).
 # Everything here is a material state change; heartbeat/token telemetry never
 # appears in agent_events, but the allow-list also guards future accidents.
+# (2026-09-29) + recovery-guardrail events: AGENT_RUNNING_WITHOUT_ASSIGNMENT,
+# REASSIGNMENT_LIMIT_REACHED, REASSIGNMENT_RECORDED (Phase C4/C5).
 SSE_EVENT_TYPES = (
     "UNREACHABLE",
     "RUNTIME_RECOVERY_EXHAUSTED",
@@ -45,6 +47,10 @@ SSE_EVENT_TYPES = (
     "BUDGET_OVERRIDE",
     "SESSION_ROTATION_REQUIRED",
     "RUNTIME_STOPPED_WITH_ACTIVE_WORK",
+    "AGENT_RUNNING_WITHOUT_ASSIGNMENT",
+    "REASSIGNMENT_RECORDED",
+    "REASSIGNMENT_REFUSED",
+    "REASSIGNMENT_LIMIT_REACHED",
 )
 
 HEARTBEAT_S = 15

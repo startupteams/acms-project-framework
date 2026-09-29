@@ -48,6 +48,9 @@ class TelemetryScheduler:
         self._task: asyncio.Task | None = None
         self._last_fleet_reconcile: datetime | None = None
         self._last_sample: dict[str, datetime] = {}
+        # C4 state-entry dedupe: AGENT_RUNNING_WITHOUT_ASSIGNMENT is emitted once
+        # per state entry (never per tick). Key = agent_id, value = currently in state.
+        self._running_unassigned: dict[str, bool] = {}
 
     # ------------------------------------------------------------------ loop
 
@@ -123,11 +126,53 @@ class TelemetryScheduler:
             )
         await db.commit()
 
+        # C4: RUNNING without a primary ACMS assignment = informational state.
+        # Human direction 2026-09-29: do NOT automatically stop the runtime.
+        # Emit once per state entry; auto-remediation is deliberately absent.
+        await self._check_running_unassigned(db, status, now_dt)
+
         # periodic telemetry sample (plan §8)
         last = self._last_sample.get(agent_id)
         if last is None or (now_dt - last).total_seconds() >= s.telemetry_sample_seconds:
             await self._write_sample(db, status, now_dt)
             self._last_sample[agent_id] = now_dt
+
+    async def _check_running_unassigned(self, db: AsyncSession, status: AgentStatusCurrentRecord,
+                                         now_dt: datetime) -> None:
+        """Informational warning when the harness reports the agent RUNNING but
+        ACMS holds no ACTIVE primary assignment (Phase C4). No auto-remediation:
+        the runtime keeps running; humans see the Attention item."""
+        from sqlalchemy import select
+        from .work_models import AssignmentRecord
+
+        running = (status.agent_running or "").lower() == "true"
+        in_state = self._running_unassigned.get(status.agent_id, False)
+        if not running:
+            if in_state:  # leaving the state: reset dedupe so a future entry re-emits
+                self._running_unassigned[status.agent_id] = False
+            return
+        active = (await db.execute(
+            select(AssignmentRecord).where(
+                AssignmentRecord.agent_id == status.agent_id,
+                AssignmentRecord.status == "ACTIVE",
+            ).limit(1)
+        )).scalars().first()
+        if active is not None:
+            if in_state:
+                self._running_unassigned[status.agent_id] = False
+            return
+        if in_state:
+            return  # already announced this entry — never per-tick spam
+        self._running_unassigned[status.agent_id] = True
+        await add_event(
+            db,
+            event_type="AGENT_RUNNING_WITHOUT_ASSIGNMENT",
+            actor_source="scheduler", agent_id=status.agent_id,
+            summary=("Agent RUNNING with no active primary ACMS assignment — "
+                     "informational; no automatic remediation"),
+            metadata={"detection": "scheduler", "policy": "observe-only"},
+        )
+        await db.commit()
 
     async def _attempt_reconciliation(self, db: AsyncSession, s, status: AgentStatusCurrentRecord, now_dt: datetime) -> bool:
         """Request a full status snapshot from the bridge (1 h stale path).
