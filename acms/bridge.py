@@ -89,11 +89,21 @@ def load_targets() -> list[BridgeTarget]:
 
 
 def get_bridge_for_agent(agent_id: str):
-    """Factory used by the reconciliation scheduler (lazy import kept here)."""
-    for t in load_targets():
-        if t.agent_id == agent_id:
-            return HermesBridge(t)
-    raise BridgeError(f"no bridge target configured for agent {agent_id}")
+    """Factory used by the reconciliation scheduler (lazy import kept here).
+
+    Phase G: resolution is ARM-authoritative (bridge_discovery); the manual
+    ACMS_BRIDGE_TARGETS_JSON list remains as fallback. Fail-closed either way.
+    """
+    from .bridge_discovery import DiscoveryError, discover_bridge
+
+    try:
+        d = discover_bridge(agent_id)
+        return HermesBridge(BridgeTarget(
+            agent_id=d.agent_id, base_url=d.base_url,
+            api_key=d.api_key, harness=d.harness,
+        ))
+    except DiscoveryError as e:
+        raise BridgeError(str(e)) from None
 
 
 class HermesBridge:
