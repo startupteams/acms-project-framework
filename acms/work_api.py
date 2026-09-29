@@ -10,6 +10,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from .db import get_session
 from .security import require_admin_token
+from .telemetry_service import TelemetryService
+from .work_creation_guard import evaluate_work_item_creation
 from .work_models import (
     AssignmentCreate,
     AssignmentResponse,
@@ -108,6 +110,19 @@ async def api_create_work_item(
     db: AsyncSession = Depends(get_session),
     _: None = Depends(require_admin_token),
 ) -> WorkItemResponse:
+    # ADR-0011 (Accepted): Work Item creation is Administrator/Executive-only.
+    # Workers record proposed_next_work in handoffs; they never create Work Items.
+    decision = evaluate_work_item_creation(caller_is_admin=True, created_by=payload.created_by)
+    if not decision.allowed:
+        await TelemetryService.record_event(
+            db,
+            event_type="WORK_CREATION_REJECTED",
+            summary="Work Item creation rejected: " + decision.reason,
+            actor_source="work_api",
+            work_key=None,
+            metadata={"created_by": payload.created_by, "authority": decision.authority},
+        )
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=decision.reason)
     try:
         record = await work_service.create_work_item(db, payload)
     except ValueError as exc:

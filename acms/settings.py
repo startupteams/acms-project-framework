@@ -55,6 +55,11 @@ class Settings(BaseSettings):
     server_manager_base_url: str = ""
     server_manager_token: str = ""
 
+    # Work Item creation authority (ADR-0011 Accepted): comma-separated agent
+    # IDs holding Executive delegation. Workers may NOT create Work Items; they
+    # record proposed_next_work in handoffs for Executive review instead.
+    executive_agent_ids: str = ""
+
 
 @lru_cache
 def get_settings() -> Settings:
