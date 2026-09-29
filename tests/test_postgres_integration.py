@@ -52,8 +52,11 @@ def _env(url: str) -> dict[str, str]:
 
 
 def _alembic(url: str, *args: str) -> None:
+    import shutil
+
+    alembic_bin = shutil.which("alembic") or str(REPO / ".venv-acms" / "bin" / "alembic")
     result = subprocess.run(
-        ["alembic", *args], cwd=REPO, env=_env(url), capture_output=True, text=True
+        [alembic_bin, *args], cwd=REPO, env=_env(url), capture_output=True, text=True
     )
     assert result.returncode == 0, f"alembic {' '.join(args)} failed:\n{result.stdout}\n{result.stderr}"
 
