@@ -81,6 +81,17 @@ class Settings(BaseSettings):
     # ADR-0012 fallback sweep rate limit (seconds between bridge-run checks).
     callback_reconcile_seconds: int = 300
 
+    # ADR-0012 runtime-driven callback watcher (window-4 plan §5/Phase C):
+    # infrastructure observes bridge run terminal state and delivers the
+    # completion callback itself (model behavior NOT required).
+    callback_watch_enabled: bool = True
+    # URL the ACMS app uses to reach ITSELF for the callback POST. Empty ⇒
+    # in-container loopback http://127.0.0.1:8000 (the app's own listener;
+    # nginx does not allowlist compose-network sources for the CT IP).
+    callback_self_url: str = ""
+    callback_watch_poll_seconds: int = 30
+    callback_watch_max_seconds: int = 7200
+
 
 @lru_cache
 def get_settings() -> Settings:

@@ -170,9 +170,10 @@ async def dispatch_work(db: AsyncSession, *, work_item_id: str,
             f"\"Authorization: Bearer <ACMS_CALLBACK_TOKEN>\" and JSON body "
             f'{{"task_id": "{task.task_id}", "acms_agent_id": "{target_agent}", '
             f'"status": "SUCCEEDED"|"FAILED"|"CANCELLED", "completed_at": "<UTC ISO>", '
-            f'"result_reference": "<PR/artifact URL>", "error_summary": "<one line when failed>"}}. '
-            f"Your agent id for acms_agent_id is {target_agent}. This is mandatory; "
-            f"ACMS reconciliation only repairs lost callbacks."
+            f'"error_summary": "<one line when failed>"}}. '
+            f"Your agent id for acms_agent_id is {target_agent}. "
+            f"ACMS runtime infrastructure also observes completion and delivers "
+            f"the callback itself — this hint is a redundant optional path."
         )
 
     # ---- 5. dispatch through the bridge (new A2A run) ----------------------
@@ -239,6 +240,17 @@ async def dispatch_work(db: AsyncSession, *, work_item_id: str,
                   "work_item_id": work_item_id, "actor": actor},
     )
     await db.commit()
+
+    # ---- 8. runtime-driven completion watcher (ADR-0012 primary path) ------
+    # Infrastructure observes the bridge run and delivers the completion
+    # callback itself — never dependent on the model following instructions
+    # (window-4 plan §C1). Scheduled AFTER commit; failures never break the
+    # dispatch result (watch scheduling is fail-open, reconcile is fallback).
+    if run_id:
+        from .run_watcher import schedule_run_watch
+
+        schedule_run_watch(task.task_id)
+
     return {"dispatched": True, "reason": verdict.get("reason", "dispatched"),
             "task_id": task.task_id, "external_task_id": str(run_id) if run_id else None,
             "budget_check": verdict}
