@@ -64,6 +64,10 @@ from .economics_api import router as economics_router  # noqa: E402
 
 app.include_router(economics_router)
 
+from .callback_api import router as callback_router  # noqa: E402
+
+app.include_router(callback_router)
+
 
 @app.get("/health")
 async def health() -> dict[str, str]:

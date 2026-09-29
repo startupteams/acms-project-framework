@@ -46,6 +46,11 @@ services:
       ACMS_BRIDGE_TARGETS_JSON: ${ACMS_BRIDGE_TARGETS_JSON:-}
       # Work Item creation authority (ADR-0011 Accepted): Executive Agent IDs.
       ACMS_EXECUTIVE_AGENT_IDS: ${ACMS_EXECUTIVE_AGENT_IDS:-}
+      # ADR-0012 completion callback: scoped token + advertised base URL for
+      # worker terminal-result delivery (protocol hint in dispatch instructions).
+      ACMS_CALLBACK_TOKEN: ${ACMS_CALLBACK_TOKEN:-}
+      ACMS_CALLBACK_BASE_URL: ${ACMS_CALLBACK_BASE_URL:-}
+      ACMS_CALLBACK_RECONCILE_SECONDS: ${ACMS_CALLBACK_RECONCILE_SECONDS:-300}
       ACMS_LDAP_URL: ${ACMS_LDAP_URL:?set ACMS_LDAP_URL in /opt/acms/.env}
       ACMS_LDAP_BIND_DN: ${ACMS_LDAP_BIND_DN:-}
       ACMS_LDAP_BIND_PASSWORD: ${ACMS_LDAP_BIND_PASSWORD:-}

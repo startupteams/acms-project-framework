@@ -21,6 +21,7 @@ Design rules from the plan:
 from __future__ import annotations
 
 import hashlib
+import json
 from typing import Any
 
 from sqlalchemy import select
@@ -29,6 +30,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from . import budget_service, work_service
 from .session_lifecycle import fail_session_for_dispatch, open_session_for_dispatch
 from .bridge import BridgeError, get_bridge_for_agent
+from .telemetry_models import AgentEventRecord
 from .telemetry_service import add_event
 from .work_models import ExecutionTaskCreate, ExecutionTaskRecord, WorkItemRecord
 
@@ -53,17 +55,26 @@ def _idempotency_key(work_item_id: str, assignment_id: str | None,
 async def _find_existing_task(db: AsyncSession, dedupe_key: str) -> Any | None:
     """The most recent task created from this dedupe key.
 
-    Tasks carry the dedupe key as external_task_id ``disp-<key>`` — the
-    ExecutionTaskRecord therefore doubles as the idempotency ledger without a
-    new table.
+    The dedupe ledger lives in the durable EXECUTION_DISPATCHED event metadata
+    (``dedupe_key`` → ``task_id``) — external_task_id now carries the A2A run
+    id (ADR-0012 callback binding), so it can no longer double as the idem-
+    potency ledger. The event log is the same durability class ACMS already
+    relies on for reassignment counting (PR #32 pattern).
     """
-    rows = (await db.execute(
-        select(ExecutionTaskRecord)
-        .where(ExecutionTaskRecord.external_task_id == f"disp-{dedupe_key}")
-        .order_by(ExecutionTaskRecord.started_at.desc())
-        .limit(1)
-    )).scalars().all()
-    return rows[0] if rows else None
+    rows = (await db.scalars(
+        select(AgentEventRecord)
+        .where(AgentEventRecord.event_type == "EXECUTION_DISPATCHED")
+        .order_by(AgentEventRecord.timestamp.desc())
+        .limit(200)
+    )).all()
+    for ev in rows:  # newest first
+        try:
+            meta = json.loads(ev.metadata_json) if ev.metadata_json else {}
+        except (TypeError, ValueError):
+            continue
+        if meta.get("dedupe_key") == dedupe_key and meta.get("task_id"):
+            return await db.get(ExecutionTaskRecord, meta["task_id"])
+    return None
 
 
 async def dispatch_work(db: AsyncSession, *, work_item_id: str,
@@ -131,13 +142,46 @@ async def dispatch_work(db: AsyncSession, *, work_item_id: str,
     if bridge is None:
         raise DispatchError("no-bridge-target", 503, {"agent_id": target_agent})
 
+    # ---- 4b. pre-create the execution task so the runtime can call back ----
+    # ADR-0012: the completion callback binds task_id + agent id, so the task
+    # row must exist BEFORE the run starts and its id must travel with the
+    # instruction. Failure to record the task aborts the dispatch (nothing
+    # was sent to the bridge — budget not consumed, no session created).
+    task, err = await work_service.create_execution_task(db, ExecutionTaskCreate(
+        work_item_id=work_item_id,
+        agent_id=target_agent,
+        external_task_id=None,  # a2a run id back-filled after send_work
+    ))
+    if task is None:
+        raise DispatchError(err or "task-record-failed", 500)
+
+    # ADR-0012 primary completion path: the instruction carries the callback
+    # contract so the runtime reports its terminal result itself. The
+    # reconcile sweep stays the fallback for lost/late callbacks.
+    from .settings import get_settings
+
+    callback_base = get_settings().callback_base_url or ""
+    dispatch_instruction = instruction
+    if callback_base:
+        dispatch_instruction = (
+            f"{instruction}\n\n---\nCOMPLETION PROTOCOL (ACMS ADR-0012): when this task "
+            f"reaches a terminal state, POST to "
+            f"{callback_base}/api/v1/callbacks/execution-completion with header "
+            f"\"Authorization: Bearer <ACMS_CALLBACK_TOKEN>\" and JSON body "
+            f'{{"task_id": "{task.task_id}", "acms_agent_id": "{target_agent}", '
+            f'"status": "SUCCEEDED"|"FAILED"|"CANCELLED", "completed_at": "<UTC ISO>", '
+            f'"result_reference": "<PR/artifact URL>", "error_summary": "<one line when failed>"}}. '
+            f"Your agent id for acms_agent_id is {target_agent}. This is mandatory; "
+            f"ACMS reconciliation only repairs lost callbacks."
+        )
+
     # ---- 5. dispatch through the bridge (new A2A run) ----------------------
     session_for_run = None  # set on success; failure path closes it if set
     try:
         result = bridge.send_work(
             work_key=work.work_key or work_item_id,
             assignment_key=(active.assignment_key if active else "") or "",
-            instruction=instruction,
+            instruction=dispatch_instruction,
             session_id=session_id,
         )
     except BridgeError as e:
@@ -160,6 +204,10 @@ async def dispatch_work(db: AsyncSession, *, work_item_id: str,
 
     run_id = (result or {}).get("run_id") or (result or {}).get("id")
 
+    # back-fill the A2A run id on the pre-created task (ADR-0012 binding)
+    if run_id:
+        task.external_task_id = str(run_id)
+
     # Phase F (plan §8): the dispatch automatically owns an ExecutionSession.
     # Idempotent on the A2A run id — a duplicate dispatch never duplicates it.
     session_for_run = await open_session_for_dispatch(
@@ -169,14 +217,9 @@ async def dispatch_work(db: AsyncSession, *, work_item_id: str,
         harness_session_id=(result or {}).get("session_id"),
     )
 
-    # ---- 6. record the execution task + correlation ------------------------
-    task, err = await work_service.create_execution_task(db, ExecutionTaskCreate(
-        work_item_id=work_item_id,
-        agent_id=target_agent,
-        external_task_id=f"disp-{dedupe_key}",
-    ))
-    if task is None:
-        raise DispatchError(err or "task-record-failed", 500)
+    # ---- 6. execution task pre-created in step 4b (ADR-0012); the dedupe
+    # ledger is preserved on the event metadata (``disp-<key>`` remains the
+    # client-visible idempotency marker) ------------------------
 
     # ---- 7. durable audit trail --------------------------------------------
     await add_event(

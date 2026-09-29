@@ -70,6 +70,17 @@ class Settings(BaseSettings):
     jira_projects: str = ""
     jira_status_mutation_enabled: bool = False
 
+    # ADR-0012 completion callback (Accepted 2026-09-29): dedicated scoped
+    # token for worker-runtime terminal-result delivery. Empty ⇒ the callback
+    # endpoint fails closed (503) — never accept results unauthenticated.
+    callback_token: str = ""
+    # Externally reachable ACMS base URL advertised to workers in dispatch
+    # instructions (ADR-0012). Empty ⇒ no protocol hint is appended (callbacks
+    # off; reconciliation remains the completion authority).
+    callback_base_url: str = ""
+    # ADR-0012 fallback sweep rate limit (seconds between bridge-run checks).
+    callback_reconcile_seconds: int = 300
+
 
 @lru_cache
 def get_settings() -> Settings:

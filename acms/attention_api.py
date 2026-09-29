@@ -45,6 +45,10 @@ ATTENTION_EVENT_TYPES = (
     "RUNTIME_STOPPED_WITH_ACTIVE_WORK",
     "AGENT_RUNNING_WITHOUT_ASSIGNMENT",
     "REASSIGNMENT_LIMIT_REACHED",
+    "EXECUTION_COMPLETED",
+    "EXECUTION_CANCELLED",
+    "EXECUTION_CALLBACK_REJECTED",
+    "EXECUTION_RECONCILED",
 )
 
 # Severity mapping (REV2 §15 priority order: highest first)
@@ -63,6 +67,11 @@ SEVERITY = {
     "SESSION_ROTATION_REQUIRED": "medium",
     "RECONCILE_FAILED": "medium",
     "RUNTIME_STOPPED_WITH_ACTIVE_WORK": "medium",
+    "EXECUTION_CANCELLED": "medium",
+    "EXECUTION_CALLBACK_REJECTED": "high",
+    "EXECUTION_RECONCILED": "info",
+    # EXECUTION_COMPLETED intentionally absent: success → no Attention item
+    # (it stays in the event log + SSE; ADR-0012 Attention policy).
 }
 
 DEFAULT_LOOKBACK_HOURS = 72
@@ -84,6 +93,8 @@ def _derive(r: AgentEventRecord, severity: str | None):
     sev = SEVERITY.get(r.event_type, "medium")
     if r.event_type == "BUDGET_THRESHOLD_CROSSED" and "HARD_EXCEEDED" in (r.summary or ""):
         sev = "critical"
+    if r.event_type == "EXECUTION_COMPLETED":
+        return None  # success never surfaces as Attention (ADR-0012 policy)
     if severity and sev != severity:
         return None
     return {
