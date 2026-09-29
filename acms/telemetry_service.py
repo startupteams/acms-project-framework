@@ -142,6 +142,7 @@ class TelemetryService:
             event_id=str(__import__("uuid").uuid4()),
             sequence=seq,
             timestamp=_now(),
+            event_type=event_type,
             actor_source=actor_source,
             agent_id=agent_id,
             work_key=work_key,
