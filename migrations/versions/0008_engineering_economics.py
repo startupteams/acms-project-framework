@@ -42,7 +42,9 @@ def upgrade() -> None:
         sa.Column("branch", sa.String(255), nullable=True),
         sa.Column("pr_number", sa.Integer(), nullable=True),
         sa.Column("pr_url", sa.String(512), nullable=True),
-        sa.Column("commit_shas", sa.Text(), nullable=True),  # JSON list
+        # renamed commit_shas → commit_shas_json in 0009 (ORM parity; fresh
+        # installs create the final name directly)
+        sa.Column("commit_shas_json", sa.Text(), nullable=True),  # JSON list
         # OPEN|MERGED|CI_VERIFIED|DEPLOYED|LIVE_VERIFIED|ACCEPTED|REWORK_REQUIRED|REVERTED
         sa.Column("outcome_state", sa.String(20), nullable=False, server_default="OPEN"),
         sa.Column("accepted_at", sa.DateTime(timezone=True), nullable=True),
