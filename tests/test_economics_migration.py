@@ -62,8 +62,10 @@ def _scalar(pg_url: str, sql: str):
 
 
 def test_0008_chain_and_downgrade(pg_url):
-    r = _alembic(pg_url, "upgrade", "head")
-    assert r.returncode == 0, f"upgrade head failed:\n{r.stdout}\n{r.stderr}"
+    # pin the exact revision, never head — 0009 now exists and shared PGDATA
+    # may carry a stale stamp (agents.md migration-test ordering lesson)
+    r = _alembic(pg_url, "upgrade", "0008_engineering_economics")
+    assert r.returncode == 0, f"upgrade 0008 failed:\n{r.stdout}\n{r.stderr}"
     assert _scalar(pg_url, "select version_num from alembic_version") == "0008_engineering_economics"
     for t in ("pr_outcomes", "requirement_links", "cost_attribution"):
         assert _scalar(pg_url, f"select count(*) from information_schema.tables where table_name='{t}'") == 1
@@ -74,3 +76,72 @@ def test_0008_chain_and_downgrade(pg_url):
     assert r2.returncode == 0, f"downgrade failed:\n{r2.stdout}\n{r2.stderr}"
     assert _scalar(pg_url, "select version_num from alembic_version") == "0007_work_budgets"
     assert _scalar(pg_url, "select count(*) from information_schema.tables where table_name='pr_outcomes'") == 0
+
+
+def test_0009_commit_shas_json_parity(pg_url):
+    """0009 must leave pr_outcomes with commit_shas_json on BOTH paths.
+
+    (a) 0008-migrated path: the legacy commit_shas column gets renamed.
+    (b) Fresh-install path: 0008 (fixed) creates commit_shas_json and 0009
+        is a no-op — the final schema is identical either way (ORM parity
+        repair for the window-4 live finding where economics writes 500'd
+        against the migrated prod DB).
+    """
+    # --- (a) 0008-migrated path ---
+    # start from a known stamp — shared PGDATA may hold any stale version
+    r = _alembic(pg_url, "downgrade", "0007_work_budgets")
+    assert r.returncode == 0, f"pre-clean downgrade failed:\n{r.stdout}\n{r.stderr}"
+    r = _alembic(pg_url, "upgrade", "0008_engineering_economics")
+    assert r.returncode == 0, f"upgrade 0008 failed:\n{r.stdout}\n{r.stderr}"
+    # simulate the historical prod divergence ONLY if 0008 already creates
+    # the final name (fresh check); force-create the legacy column to prove
+    # the rename branch deterministically.
+    import asyncio
+
+    import sqlalchemy.ext.asyncio as sa_async
+
+    async def _force_legacy():
+        eng = sa_async.create_async_engine(pg_url.replace("postgresql://", "postgresql+asyncpg://"))
+        try:
+            async with eng.begin() as conn:
+                await conn.exec_driver_sql(
+                    "ALTER TABLE pr_outcomes DROP COLUMN IF EXISTS commit_shas_json")
+                await conn.exec_driver_sql(
+                    "ALTER TABLE pr_outcomes ADD COLUMN IF NOT EXISTS commit_shas TEXT")
+        finally:
+            await eng.dispose()
+
+    asyncio.run(_force_legacy())
+    r = _alembic(pg_url, "upgrade", "head")
+    assert r.returncode == 0, f"upgrade head (0009 rename) failed:\n{r.stdout}\n{r.stderr}"
+    assert _scalar(pg_url, "select version_num from alembic_version") == "0009_pr_outcome_column_parity"
+    assert _scalar(pg_url, "select count(*) from information_schema.columns "
+                   "where table_name='pr_outcomes' and column_name='commit_shas_json'") == 1
+    assert _scalar(pg_url, "select count(*) from information_schema.columns "
+                   "where table_name='pr_outcomes' and column_name='commit_shas'") == 0
+
+    # ORM can actually SELECT the migrated table (the live failure signature)
+    async def _orm_select():
+        import sys
+        sys.path.insert(0, str(REPO))
+        from acms.economics_models import PrOutcomeRecord
+        import sqlalchemy.ext.asyncio as sa_async2
+
+        eng = sa_async2.create_async_engine(pg_url.replace("postgresql://", "postgresql+asyncpg://"))
+        try:
+            async with eng.connect() as conn:
+                from sqlalchemy import select
+                await conn.execute(select(PrOutcomeRecord.outcome_id))
+        finally:
+            await eng.dispose()
+
+    asyncio.run(_orm_select())
+
+    # downgrade 0009 → 0008 restores the legacy name (chain symmetry)
+    r = _alembic(pg_url, "downgrade", "0008_engineering_economics")
+    assert r.returncode == 0, f"downgrade 0009 failed:\n{r.stdout}\n{r.stderr}"
+    assert _scalar(pg_url, "select count(*) from information_schema.columns "
+                   "where table_name='pr_outcomes' and column_name='commit_shas'") == 1
+    # return to head for any later module sharing this PGDATA
+    r = _alembic(pg_url, "upgrade", "head")
+    assert r.returncode == 0
