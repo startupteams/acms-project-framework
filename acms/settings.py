@@ -60,6 +60,16 @@ class Settings(BaseSettings):
     # record proposed_next_work in handoffs for Executive review instead.
     executive_agent_ids: str = ""
 
+    # Jira v1 integration (2026-09-29 plan Phase D): Jira = human planning
+    # layer, ACMS = AI execution beneath it. Credentials env-only, never Git.
+    # Empty base_url/email/token => client runs in MOCK mode (no fabricated
+    # credentials). Status mutation is flagged OFF by default (plan D6).
+    jira_base_url: str = ""
+    jira_email: str = ""
+    jira_api_token: str = ""
+    jira_projects: str = ""
+    jira_status_mutation_enabled: bool = False
+
 
 @lru_cache
 def get_settings() -> Settings:
