@@ -37,6 +37,7 @@ from .telemetry_models import (
     CONTACT_SOURCE_RECONCILIATION,
 )
 from .telemetry_service import TelemetryService, _new_id, add_event, _now
+from .settings import get_settings
 
 logger = logging.getLogger("acms.telemetry.scheduler")
 
@@ -47,6 +48,7 @@ class TelemetryScheduler:
         self._now_fn = now_fn or _now
         self._task: asyncio.Task | None = None
         self._last_fleet_reconcile: datetime | None = None
+        self._last_result_reconcile: datetime | None = None
         self._last_sample: dict[str, datetime] = {}
         # C4 state-entry dedupe: AGENT_RUNNING_WITHOUT_ASSIGNMENT is emitted once
         # per state entry (never per tick). Key = agent_id, value = currently in state.
@@ -86,6 +88,7 @@ class TelemetryScheduler:
             for status in statuses:
                 await self._evaluate_agent(db, s, status, now_dt)
             await self._maybe_fleet_reconcile(db, s, now_dt)
+            await self._reconcile_execution_results(db, s, now_dt)
 
     # ------------------------------------------------------- per-agent logic
 
@@ -202,6 +205,66 @@ class TelemetryScheduler:
                 metadata={"error": str(exc)[:300]})
             await db.commit()
             return False
+
+    async def _reconcile_execution_results(self, db: AsyncSession, s, now_dt: datetime) -> None:
+        """ADR-0012 fallback: close nonterminal ACMS tasks/sessions whose A2A
+        run is terminal on the bridge (lost callback / partition / restart /
+        late callback repair path). Primary signal remains the callback.
+
+        Rate-limited: sweeps at most every ``ACMS_CALLBACK_RECONCILE_SECONDS``
+        (default 300s) so a tick loop never hammers the bridge.
+        """
+        interval = max(60, int(getattr(s, "callback_reconcile_seconds", 300)))
+        last = self._last_result_reconcile
+        if last is not None and (now_dt - last).total_seconds() < interval:
+            return
+        self._last_result_reconcile = now_dt
+
+        from . import bridge as _bridge_mod
+
+        get_bridge_for_agent = _bridge_mod.get_bridge_for_agent
+        from .work_models import ExecutionTaskRecord
+
+        nonterminal = (await db.execute(
+            select(ExecutionTaskRecord)
+            .where(ExecutionTaskRecord.status == "RUNNING")
+            .where(ExecutionTaskRecord.external_task_id.isnot(None))
+            .where(ExecutionTaskRecord.external_task_id.notlike("disp-%"))
+            .order_by(ExecutionTaskRecord.started_at.asc())
+            .limit(20)
+        )).scalars().all()
+        if not nonterminal:
+            return
+        repaired = 0
+        for task in nonterminal:
+            if not task.agent_id:
+                continue  # unassigned task rows are never bridge-reconciled
+            try:
+                bridge = get_bridge_for_agent(task.agent_id)
+                run = bridge._get(f"/v1/runs/{task.external_task_id}")
+            except Exception:  # noqa: BLE001 — unreachable runtime: try next sweep
+                continue
+            run_status = (run or {}).get("status") or ""
+            terminal_map = {"succeeded": "SUCCEEDED", "completed": "SUCCEEDED",
+                            "failed": "FAILED", "cancelled": "CANCELLED",
+                            "canceled": "CANCELLED"}
+            mapped = terminal_map.get(run_status.lower())
+            if not mapped:
+                continue
+            task.status = mapped
+            task.finished_at = now_dt
+            repaired += 1
+            await add_event(
+                db, event_type="EXECUTION_RECONCILED", actor_source="result_reconciliation",
+                agent_id=task.agent_id, work_key=None,
+                a2a_task_id=task.external_task_id,
+                summary=(f"Reconciler closed task {task.task_id[:12]} → {mapped} "
+                         f"from bridge run status '{run_status}' (callback lost/late)"),
+                metadata={"task_id": task.task_id, "a2a_run_id": task.external_task_id,
+                          "source": "adr0012_reconciliation"},
+            )
+        if repaired:
+            await db.commit()
 
     async def _maybe_fleet_reconcile(self, db: AsyncSession, s, now_dt: datetime) -> None:
         if self._last_fleet_reconcile is None:
