@@ -10,6 +10,7 @@ On real PostgreSQL 16 (pgserver):
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -41,8 +42,9 @@ def pg_url() -> str:
 
 def _alembic(pg_url: str, *args: str) -> subprocess.CompletedProcess:
     env = {**os.environ, "ACMS_DATABASE_URL": pg_url}
+    alembic_bin = shutil.which("alembic") or str(REPO / ".venv-acms" / "bin" / "alembic")
     return subprocess.run(
-        [f"{REPO}/.venv-acms/bin/alembic", "-c", str(REPO / "alembic.ini"), *args],
+        [alembic_bin, "-c", str(REPO / "alembic.ini"), *args],
         env=env, capture_output=True, text=True, cwd=REPO,
     )
 
