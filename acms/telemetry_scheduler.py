@@ -253,6 +253,23 @@ class TelemetryScheduler:
                 continue
             task.status = mapped
             task.finished_at = now_dt
+            # ADR-0012 §C5: reconciliation repairs SESSION state too — close the
+            # OPEN ExecutionSession correlated to this A2A run (fail-safe: never
+            # reopen or fabricate; only OPEN sessions for the same run id).
+            from .memory_models import ExecutionSessionRecord as _ESR
+
+            sess = (await db.scalars(
+                select(_ESR)
+                .where(_ESR.a2a_task_id == task.external_task_id)
+                .where(_ESR.status == "OPEN")
+                .order_by(_ESR.started_at.desc())
+                .limit(1)
+            )).first()
+            session_id = None
+            if sess is not None:
+                sess.status = "CLOSED"
+                sess.ended_at = now_dt
+                session_id = sess.session_id
             repaired += 1
             await add_event(
                 db, event_type="EXECUTION_RECONCILED", actor_source="result_reconciliation",
@@ -261,7 +278,7 @@ class TelemetryScheduler:
                 summary=(f"Reconciler closed task {task.task_id[:12]} → {mapped} "
                          f"from bridge run status '{run_status}' (callback lost/late)"),
                 metadata={"task_id": task.task_id, "a2a_run_id": task.external_task_id,
-                          "source": "adr0012_reconciliation"},
+                          "session_id": session_id, "source": "adr0012_reconciliation"},
             )
         if repaired:
             await db.commit()

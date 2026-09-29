@@ -262,6 +262,12 @@ async def test_reconciler_closes_task_from_bridge_terminal_status(db, monkeypatc
 
     await db.refresh(task)
     assert task.status == "SUCCEEDED"
+    # ADR-0012 §C5: the correlated OPEN session is closed by the same sweep
+    session_rows = (await db.execute(
+        select(ExecutionSessionRecord).where(
+            ExecutionSessionRecord.a2a_task_id == "run-recon-1"))).scalars().all()
+    assert len(session_rows) == 1 and session_rows[0].status == "CLOSED"
+    assert session_rows[0].ended_at is not None
     assert len(await _events(db, "EXECUTION_RECONCILED")) == 1
 
     # rate limit: an immediate second sweep inside the interval is a no-op
