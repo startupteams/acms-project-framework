@@ -107,4 +107,3 @@ flowchart LR
 ```
 
 The initial repository/document bootstrap may be committed directly with explicit human authorization. Feature implementation after bootstrap must use a branch and pull request with human verification before merge.
-VERIFICATION-ONLY-COMMIT-1790675686
