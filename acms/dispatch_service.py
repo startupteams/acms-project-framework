@@ -27,6 +27,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from . import budget_service, work_service
+from .session_lifecycle import fail_session_for_dispatch, open_session_for_dispatch
 from .bridge import BridgeError, get_bridge_for_agent
 from .telemetry_service import add_event
 from .work_models import ExecutionTaskCreate, ExecutionTaskRecord, WorkItemRecord
@@ -131,6 +132,7 @@ async def dispatch_work(db: AsyncSession, *, work_item_id: str,
         raise DispatchError("no-bridge-target", 503, {"agent_id": target_agent})
 
     # ---- 5. dispatch through the bridge (new A2A run) ----------------------
+    session_for_run = None  # set on success; failure path closes it if set
     try:
         result = bridge.send_work(
             work_key=work.work_key or work_item_id,
@@ -152,10 +154,20 @@ async def dispatch_work(db: AsyncSession, *, work_item_id: str,
             metadata={"dedupe_key": dedupe_key, "budget_check": verdict,
                       "work_item_id": work_item_id},
         )
+        await fail_session_for_dispatch(db, session=session_for_run, reason=str(e))
         await db.commit()
         raise DispatchError("bridge-error", 502, {"detail": str(e)[:300]}) from None
 
     run_id = (result or {}).get("run_id") or (result or {}).get("id")
+
+    # Phase F (plan §8): the dispatch automatically owns an ExecutionSession.
+    # Idempotent on the A2A run id — a duplicate dispatch never duplicates it.
+    session_for_run = await open_session_for_dispatch(
+        db, agent_id=str(target_agent), work_item_id=work_item_id,
+        assignment_id=(active.assignment_id if active else None),
+        a2a_task_id=str(run_id) if run_id else None,
+        harness_session_id=(result or {}).get("session_id"),
+    )
 
     # ---- 6. record the execution task + correlation ------------------------
     task, err = await work_service.create_execution_task(db, ExecutionTaskCreate(
