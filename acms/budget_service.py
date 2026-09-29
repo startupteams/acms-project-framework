@@ -149,7 +149,7 @@ async def set_budget(db: AsyncSession, work_item_id: str, *,
     rollup = await work_budget_rollup(db, work_item_id)
     budget.budget_state = evaluate_budget_state(budget, rollup)
     await add_event(
-        db, event_type="BUDGET_SET", actor_source="budget_service", agent_id="",
+        db, event_type="BUDGET_SET", actor_source="budget_service",
         summary=f"Budget {'set' if created else 'updated'} for {item.work_key or work_item_id}: "
                 f"soft={soft_budget_usd} hard={hard_budget_usd} (override cleared)",
         metadata={"work_item_id": work_item_id,
@@ -174,7 +174,7 @@ async def override_hard_limit(db: AsyncSession, work_item_id: str, *,
     budget.override_reason = reason
     budget.overridden_at = _now()
     await add_event(
-        db, event_type="BUDGET_OVERRIDE", actor_source="budget_service", agent_id="",
+        db, event_type="BUDGET_OVERRIDE", actor_source="budget_service",
         summary=f"Hard-budget override by {override_by} for {item.work_key or work_item_id}: {reason[:200]}",
         metadata={"work_item_id": work_item_id, "override_by": override_by,
                   "reason": reason, "budget_state": budget.budget_state},
@@ -277,7 +277,7 @@ async def refresh_budget_state(db: AsyncSession, work_item_id: str) -> WorkBudge
             item = await db.get(WorkItemRecord, work_item_id)
             await add_event(
                 db, event_type="BUDGET_THRESHOLD_CROSSED",
-                actor_source="budget_service", agent_id="",
+                actor_source="budget_service",
                 summary=f"Budget {new_state} for {item.work_key or work_item_id}: "
                         f"spend ${rollup.estimated_cost_usd:.2f} vs soft "
                         f"{budget.soft_budget_usd} hard {budget.hard_budget_usd}",
