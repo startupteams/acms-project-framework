@@ -44,6 +44,8 @@ services:
       ACMS_SERVER_MANAGER_TOKEN: ${ACMS_SERVER_MANAGER_TOKEN:-}
       # Agent Bridge targets (slice 3+4 plan §15): JSON list of {agent_id, base_url, api_key}.
       ACMS_BRIDGE_TARGETS_JSON: ${ACMS_BRIDGE_TARGETS_JSON:-}
+      # Work Item creation authority (ADR-0011 Accepted): Executive Agent IDs.
+      ACMS_EXECUTIVE_AGENT_IDS: ${ACMS_EXECUTIVE_AGENT_IDS:-}
       ACMS_LDAP_URL: ${ACMS_LDAP_URL:?set ACMS_LDAP_URL in /opt/acms/.env}
       ACMS_LDAP_BIND_DN: ${ACMS_LDAP_BIND_DN:-}
       ACMS_LDAP_BIND_PASSWORD: ${ACMS_LDAP_BIND_PASSWORD:-}
