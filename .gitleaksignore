@@ -1,0 +1,7 @@
+# Test fixtures: fixed throwaway session secret used only by the pytest UI
+# suite to construct HMAC sessions in unit tests. Not a credential.
+tests/test_agent_detail_ui.py:generic-api-key:41
+tests/test_runtime_ui.py:generic-api-key:35
+tests/test_ui_auth.py:generic-api-key:83
+tests/test_work_ui.py:generic-api-key:40
+tests/test_ui_pages.py:generic-api-key:26
