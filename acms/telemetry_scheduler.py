@@ -233,9 +233,7 @@ class TelemetryScheduler:
             .order_by(ExecutionTaskRecord.started_at.asc())
             .limit(20)
         )).scalars().all()
-        if not nonterminal:
-            return
-        repaired = 0
+        repaired = 0  # empty task batch still falls through to the orphan-session sweep
         for task in nonterminal:
             if not task.agent_id:
                 continue  # unassigned task rows are never bridge-reconciled
@@ -281,6 +279,45 @@ class TelemetryScheduler:
                           "session_id": session_id, "source": "adr0012_reconciliation"},
             )
         if repaired:
+            await db.commit()
+
+        # Orphaned-session repair: OPEN sessions whose task is ALREADY terminal
+        # (e.g. task closed by an older deploy, session left OPEN) — close them
+        # from bridge truth as well (ADR-0012 §C5 repairs session state).
+        from .memory_models import ExecutionSessionRecord as _ESR
+
+        open_sessions = (await db.scalars(
+            select(_ESR)
+            .where(_ESR.status == "OPEN")
+            .where(_ESR.a2a_task_id.isnot(None))
+            .order_by(_ESR.started_at.asc())
+            .limit(20)
+        )).all()
+        session_repaired = 0
+        for sess in open_sessions:
+            agent = sess.agent_id
+            if not agent:
+                continue
+            try:
+                bridge = get_bridge_for_agent(agent)
+                run = bridge._get(f"/v1/runs/{sess.a2a_task_id}")
+            except Exception:  # noqa: BLE001 — unreachable runtime: try next sweep
+                continue
+            run_status = ((run or {}).get("status") or "").lower()
+            if run_status in ("succeeded", "completed", "failed", "cancelled", "canceled"):
+                sess.status = "CLOSED"
+                sess.ended_at = now_dt
+                session_repaired += 1
+                await add_event(
+                    db, event_type="EXECUTION_RECONCILED", actor_source="result_reconciliation",
+                    agent_id=agent, work_key=None, a2a_task_id=sess.a2a_task_id,
+                    summary=(f"Reconciler closed orphaned OPEN session {sess.session_id[:12]} "
+                             f"from bridge run status '{run_status}'"),
+                    metadata={"session_id": sess.session_id,
+                              "a2a_run_id": sess.a2a_task_id,
+                              "source": "adr0012_reconciliation"},
+                )
+        if session_repaired:
             await db.commit()
 
     async def _maybe_fleet_reconcile(self, db: AsyncSession, s, now_dt: datetime) -> None:

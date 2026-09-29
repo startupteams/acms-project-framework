@@ -294,3 +294,32 @@ async def test_reconciler_ignores_disp_prefixed_and_open_runs(db, monkeypatch):
     await db.refresh(task)
     assert task.status == "RUNNING"
     assert len(await _events(db, "EXECUTION_RECONCILED")) == 0
+
+async def test_reconciler_closes_orphaned_open_session(db, monkeypatch):
+    """Task already terminal (closed by an older deploy) but session left OPEN —
+    the sweep repairs the session from bridge truth (ADR-0012 §C5)."""
+    import acms.bridge as bridge_mod
+    from acms.telemetry_scheduler import TelemetryScheduler
+
+    # task ALREADY terminal; session OPEN
+    await _mk_task(db, external="run-orphan-1", status="SUCCEEDED")
+    await _mk_open_session(db, a2a="run-orphan-1")
+
+    class _B:
+        def __init__(self, t):
+            pass
+
+        def _get(self, path):
+            return {"status": "completed"}
+
+    monkeypatch.setattr(bridge_mod, "get_bridge_for_agent", lambda aid: _B(None))
+    sched = TelemetryScheduler(session_factory=None)
+    sched._last_result_reconcile = None
+    await sched._reconcile_execution_results(db, _S(), datetime.now(timezone.utc))
+
+    rows = (await db.execute(
+        select(ExecutionSessionRecord).where(
+            ExecutionSessionRecord.a2a_task_id == "run-orphan-1"))).scalars().all()
+    assert len(rows) == 1 and rows[0].status == "CLOSED"
+    assert rows[0].ended_at is not None
+    assert len(await _events(db, "EXECUTION_RECONCILED")) == 1
