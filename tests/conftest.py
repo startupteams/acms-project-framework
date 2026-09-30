@@ -20,6 +20,7 @@ from acms import server_manager_api  # noqa: E402,F401  (register provisioning_r
 from acms import work_keys  # noqa: E402,F401  (register acms_key_counters on Base.metadata)
 from acms import memory_models  # noqa: E402,F401  (register memory/session offload tables on Base.metadata)
 from acms import economics_models  # noqa: E402,F401  (register engineering-economics tables on Base.metadata)
+from acms import jira_models  # noqa: E402,F401  (register jira reconciliation tables on Base.metadata)
 
 
 @pytest.fixture(autouse=True)

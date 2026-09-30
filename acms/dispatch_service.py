@@ -113,6 +113,35 @@ async def dispatch_work(db: AsyncSession, *, work_item_id: str,
                 "task_id": existing.task_id, "external_task_id": None,
                 "budget_check": None}
 
+    # ---- 2b. JIRA KICKOFF GATE (window-5 §7/§13) BEFORE budget -------------
+    # Server-enforced on EVERY dispatch path (UI, API, scheduler, retry,
+    # resume, Executive decomposition, product bootstrap — all converge here).
+    # Live Jira re-read immediately before the decision (§13.4 step 5).
+    from .jira_gate import (ELIGIBLE, JiraGateError, gate_work_item)
+
+    try:
+        gate = await gate_work_item(db, work_item_id, live_check=True)
+    except JiraGateError as e:
+        raise DispatchError("jira-gate-error", 500, {"detail": str(e)[:200]}) from None
+    if not gate.eligible:
+        await add_event(
+            db,
+            event_type="EXECUTION_REJECTED",
+            actor_source="dispatch",
+            agent_id=target_agent,
+            work_key=work.work_key,
+            assignment_key=active.assignment_key if active else None,
+            summary=(f"NEW execution blocked by Jira kickoff gate on "
+                     f"{work.work_key or work_item_id[:8]}: {gate.verdict} — "
+                     f"{gate.reason[:300]}")[:512],
+            metadata={"gate_verdict": gate.to_dict(), "work_item_id": work_item_id,
+                      "dedupe_key": dedupe_key, "gate": "jira"},
+        )
+        await db.commit()
+        return {"dispatched": False, "reason": f"jira_gate_{gate.verdict.lower()}",
+                "task_id": None, "external_task_id": None,
+                "budget_check": None, "jira_gate": gate.to_dict()}
+
     # ---- 3. budget gate (REQ-059) BEFORE any cloud execution ---------------
     verdict = await budget_service.check_new_execution_allowed(db, work_item_id)
     if not verdict.get("allowed", True):

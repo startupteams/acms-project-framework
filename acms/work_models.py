@@ -52,6 +52,18 @@ class WorkItemRecord(Base):
     scope_markdown: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    # ---- Jira kickoff linkage (window-5 §7) --------------------------------
+    # Persisted observation state is SEPARATE from desired ACMS state (§13.2).
+    jira_site_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    jira_issue_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    jira_issue_key: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    jira_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    jira_last_status: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    jira_last_assignee_account_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    jira_last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # ELIGIBLE | NOT_LINKED | NOT_READY | ASSIGNEE_MISMATCH | LOCAL_HOLD | JIRA_UNKNOWN
+    jira_eligibility: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    jira_eligibility_reason: Mapped[str | None] = mapped_column(String(512), nullable=True)
 
     @staticmethod
     def new_id() -> str:

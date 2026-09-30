@@ -25,6 +25,19 @@
 {% if user.role == 'administrator' %}
 <section class="panel">
   <a class="button" href="/ui/work/new">+ New work item</a>
+  <form method="post" action="/ui/jira/check-now" class="inline-form">
+    <button type="submit" class="button secondary">Check Jira now</button>
+    <span class="muted">executes reconciliation immediately — eligible work may start, pause, or stop (Jira is the human kickoff gate)</span>
+  </form>
+</section>
+{% endif %}
+
+{% if request.query_params.get('jira_run') %}
+<section class="notice {% if request.query_params.get('jira_state') == 'completed' %}ok{% else %}warn{% endif %}">
+  <p>Check Jira now: run <code>{{ request.query_params.get('jira_run') }}</code> — state
+  <strong>{{ request.query_params.get('jira_state') }}</strong>{% if request.query_params.get('jira_coalesced') %}
+  (coalesced into the already-running reconciliation){% endif %}. See
+  <a href="/ui/work?jira_history=1">run history</a> for per-issue counts.</p>
 </section>
 {% endif %}
 
@@ -59,7 +72,7 @@
 {% if items %}
 <table class="data">
   <thead>
-    <tr><th>Title</th><th>Kind</th><th>Status</th><th>Parent</th><th>Created by</th><th>Updated</th></tr>
+    <tr><th>Title</th><th>Kind</th><th>Status</th><th>Parent</th><th>Jira</th><th>Created by</th><th>Updated</th></tr>
   </thead>
   <tbody>
     {% for i in items %}
@@ -68,6 +81,8 @@
       <td><span class="{{ 'badge badge-' ~ i.kind }}">{{ i.kind }}</span></td>
       <td><span class="status status-{{ i.status }}">{{ i.status }}</span></td>
       <td>{{ i.parent_title or "—" }}</td>
+      <td>{% if i.jira_issue_key %}<a href="{{ i.jira_url or '#' }}">{{ i.jira_issue_key }}</a>
+          <span class="badge">{{ i.jira_eligibility or 'unchecked' }}</span>{% else %}<span class="muted">not linked</span>{% endif %}</td>
       <td>{{ i.created_by }}</td>
       <td class="muted">{{ i.updated_at.strftime('%Y-%m-%d %H:%M') if i.updated_at else '—' }}</td>
     </tr>

@@ -33,6 +33,24 @@ import httpx
 
 from .settings import get_settings
 
+# Fields needed for kickoff-gate observations (§13.4): status + statusCategory
+# + assignee accountId (immutable identity) + updated (changelog identity).
+_ISSUE_FIELDS = "summary,description,status,priority,labels,assignee,updated"
+
+
+def ai_account_id_for_jql() -> str:
+    """Dedicated AI account's Jira accountId for JQL queries.
+
+    JQL string-literal safety: accountId contains ':' and hex — quote it for
+    JQL; reject anything that could break out of the literal.
+    """
+    aid = (getattr(get_settings(), "jira_ai_account_id", "") or "").strip()
+    if not aid:
+        return ""
+    if any(ch in aid for ch in ("'", "\\", "\n", ";")):
+        raise JiraError("ACMS_JIRA_AI_ACCOUNT_ID contains characters unsafe for JQL")
+    return aid
+
 
 @dataclass
 class JiraIssue:
@@ -44,19 +62,31 @@ class JiraIssue:
     labels: list[str]
     assignee: str | None
     url: str
+    # window-5 §7.1: match assignments by immutable accountId, never by
+    # display name or email visibility.
+    issue_id: str | None = None
+    assignee_account_id: str | None = None
+    status_category: str | None = None
+    updated: str | None = None
 
     @classmethod
     def from_api(cls, d: dict[str, Any], base_url: str) -> "JiraIssue":
         f = d.get("fields", {})
+        assignee = f.get("assignee") or {}
+        status_obj = f.get("status") or {}
         return cls(
             key=d.get("key", ""),
             summary=f.get("summary", ""),
             description=f.get("description") or "",
-            status=(f.get("status") or {}).get("name", ""),
+            status=status_obj.get("name", ""),
             priority=(f.get("priority") or {}).get("name", ""),
             labels=list(f.get("labels") or []),
-            assignee=((f.get("assignee") or {}).get("emailAddress")),
+            assignee=assignee.get("emailAddress"),
             url=f"{base_url}/browse/{d.get('key', '')}",
+            issue_id=d.get("id"),
+            assignee_account_id=assignee.get("accountId"),
+            status_category=((status_obj.get("statusCategory") or {}).get("name")),
+            updated=f.get("updated"),
         )
 
 
@@ -118,9 +148,39 @@ class JiraClient:
         jql = "assignee = currentuser() ORDER BY updated DESC"
         with httpx.Client(base_url=self.base_url, auth=self._auth(), timeout=20) as c:
             r = c.get("/rest/api/3/search/jql", params={"jql": jql, "maxResults": max_results,
-                                                        "fields": "summary,description,status,priority,labels,assignee"})
+                                                        "fields": _ISSUE_FIELDS})
             r.raise_for_status()
             return [JiraIssue.from_api(d, self.base_url) for d in r.json().get("issues", [])]
+
+    def search_ai_account_issues(self, max_results: int = 50, start_at: int = 0,
+                                 project: str | None = None) -> tuple[list[JiraIssue], int | None]:
+        """Issues assigned to the DEDICATED AI account — paginated (§13.4 step 2).
+
+        Returns (issues, next_start_at-or-None). JQL matches by accountId so it
+        works regardless of email-visibility settings.
+        """
+        account_id = ai_account_id_for_jql()
+        if not account_id:
+            raise JiraError("ACMS_JIRA_AI_ACCOUNT_ID not configured; cannot search AI-assigned issues")
+        jql = f"assignee = '{account_id}' ORDER BY updated DESC"
+        if project:
+            jql = f"project = {project} AND {jql}"
+        if self.is_mock:
+            self._record("search_ai_account_issues", max_results=max_results)
+            issues = [JiraIssue.from_api(d, "https://mock.jira") for d in self._mock_issues.values()]
+            page = issues[start_at:start_at + max_results]
+            nxt = start_at + max_results if start_at + max_results < len(issues) else None
+            return page, nxt
+        with httpx.Client(base_url=self.base_url, auth=self._auth(), timeout=20) as c:
+            r = c.get("/rest/api/3/search/jql", params={
+                "jql": jql, "maxResults": max_results, "startAt": start_at,
+                "fields": _ISSUE_FIELDS})
+            r.raise_for_status()
+            body = r.json()
+            issues = [JiraIssue.from_api(d, self.base_url) for d in body.get("issues", [])]
+            total = body.get("total")
+            nxt = start_at + max_results if total is not None and start_at + max_results < total else None
+            return issues, nxt
 
     def get_issue(self, issue_key: str) -> JiraIssue:
         self._check_projects(issue_key)
@@ -131,7 +191,20 @@ class JiraClient:
             return JiraIssue.from_api(self._mock_issues[issue_key], "https://mock.jira")
         with httpx.Client(base_url=self.base_url, auth=self._auth(), timeout=20) as c:
             r = c.get(f"/rest/api/3/issue/{issue_key}",
-                      params={"fields": "summary,description,status,priority,labels,assignee"})
+                      params={"fields": _ISSUE_FIELDS})
+            r.raise_for_status()
+            return JiraIssue.from_api(r.json(), self.base_url)
+
+    def get_issue_by_id(self, issue_id: str) -> JiraIssue:
+        """Fetch by IMMUTABLE issue id (§13.4 step 2: keys can change)."""
+        if self.is_mock:
+            self._record("get_issue_by_id", issue_id=issue_id)
+            for d in self._mock_issues.values():
+                if str(d.get("id", "")) == str(issue_id):
+                    return JiraIssue.from_api(d, "https://mock.jira")
+            raise JiraError(f"mock issue id {issue_id} not found")
+        with httpx.Client(base_url=self.base_url, auth=self._auth(), timeout=20) as c:
+            r = c.get(f"/rest/api/3/issue/{issue_id}", params={"fields": _ISSUE_FIELDS})
             r.raise_for_status()
             return JiraIssue.from_api(r.json(), self.base_url)
 

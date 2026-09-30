@@ -112,8 +112,10 @@ def test_0009_commit_shas_json_parity(pg_url):
             await eng.dispose()
 
     asyncio.run(_force_legacy())
-    r = _alembic(pg_url, "upgrade", "head")
-    assert r.returncode == 0, f"upgrade head (0009 rename) failed:\n{r.stdout}\n{r.stderr}"
+    # pin the EXACT revision — 0010_jira_kickoff_gate is head now (window-5);
+    # this test's contract is the 0009 rename specifically.
+    r = _alembic(pg_url, "upgrade", "0009_pr_outcome_column_parity")
+    assert r.returncode == 0, f"upgrade 0009 rename failed:\n{r.stdout}\n{r.stderr}"
     assert _scalar(pg_url, "select version_num from alembic_version") == "0009_pr_outcome_column_parity"
     assert _scalar(pg_url, "select count(*) from information_schema.columns "
                    "where table_name='pr_outcomes' and column_name='commit_shas_json'") == 1

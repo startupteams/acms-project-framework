@@ -29,6 +29,52 @@ def client(monkeypatch, clean_db):
     return TestClient(app)
 
 
+AI_ACCOUNT_ID = "712020:520fb263-ef0f-425c-a0be-14e9d258917e"
+
+
+@pytest.fixture(autouse=True)
+def jira_gate_ready(monkeypatch):
+    """Window-5 §7: dispatch requires Jira eligibility. These tests exercise the
+    BUDGET gate, so the Jira gate is satisfied via a controlled fake (ready +
+    AI-assigned) and every created work item is linked before dispatch."""
+    from types import SimpleNamespace
+
+    from acms.settings import get_settings
+
+    s = get_settings()
+    monkeypatch.setenv("ACMS_JIRA_AI_ACCOUNT_ID", AI_ACCOUNT_ID)
+    monkeypatch.setenv("ACMS_JIRA_READY_STATUSES", "TO START")
+    monkeypatch.delenv("ACMS_JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("ACMS_JIRA_EMAIL", raising=False)
+    monkeypatch.delenv("ACMS_JIRA_API_TOKEN", raising=False)
+    monkeypatch.setenv("ACMS_JIRA_RECONCILE_ENABLED", "false")
+    get_settings.cache_clear()
+
+    from acms import jira_client
+
+    def fake_issue(*a, **k):
+        return SimpleNamespace(
+            key="STNA-100", status="TO START", assignee_account_id=AI_ACCOUNT_ID,
+            issue_id="20001", summary="gate-fixture issue", description="", priority="High",
+            labels=[], assignee="startupteamscompany@gmail.com",
+            url="https://mock.jira/browse/STNA-100", status_category=None, updated=None)
+
+    class FakeClient:
+        def __init__(self, *a, **k):
+            self.is_mock = False
+        def get_issue(self, key):
+            return fake_issue()
+        def get_issue_by_id(self, issue_id):
+            return fake_issue()
+
+    from acms import jira_api
+
+    monkeypatch.setattr(jira_client, "JiraClient", FakeClient)
+    monkeypatch.setattr(jira_api, "JiraClient", FakeClient)
+    yield
+    get_settings.cache_clear()
+
+
 class FakeBridge:
     def __init__(self):
         self.calls = []
@@ -72,6 +118,10 @@ def _mk_work_with_assignment(client) -> str:
     agent_id = _mk_agent(client)
     w = client.post("/api/v1/work/items", headers=AUTH,
                     json={"kind": "task", "title": "dispatch-gate"}).json()["work_item_id"]
+    # window-5 §7: link the Jira issue (real endpoint; JiraClient is fixture-mocked)
+    lr = client.post(f"/api/v1/jira/work/{w}/link", headers=AUTH,
+                     json={"issue_key": "STNA-100"})
+    assert lr.status_code == 200, lr.text
     a = client.post("/api/v1/work/assignments", headers=AUTH,
                     json={"work_item_id": w, "agent_id": agent_id})
     assert a.status_code in (200, 201), a.text

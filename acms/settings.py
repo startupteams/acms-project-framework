@@ -69,6 +69,11 @@ class Settings(BaseSettings):
     jira_api_token: str = ""
     jira_projects: str = ""
     jira_status_mutation_enabled: bool = False
+    # window-5 §7/§13: kickoff gate + reconciliation
+    jira_ai_account_id: str = ""          # dedicated AI account's immutable Jira accountId
+    jira_ready_statuses: str = "TO START"  # comma-separated ready-state names (verified per project)
+    jira_reconcile_interval_hours: int = 24  # §13.6: durable poll cadence, capped at 24
+    jira_reconcile_enabled: bool = True      # master switch for the durable scheduler
 
     # ADR-0012 completion callback (Accepted 2026-09-29): dedicated scoped
     # token for worker-runtime terminal-result delivery. Empty ⇒ the callback

@@ -20,6 +20,10 @@ _scheduler = TelemetryScheduler()
 @asynccontextmanager
 async def lifespan(app):
     _scheduler.start()
+    # window-5 §13.6: durable Jira reconciliation scheduler (≤24h, UTC, catch-up)
+    from .jira_scheduler import start_scheduler
+
+    start_scheduler()
     try:
         yield
     finally:
@@ -67,6 +71,10 @@ app.include_router(economics_router)
 from .callback_api import router as callback_router  # noqa: E402
 
 app.include_router(callback_router)
+
+from .jira_api import router as jira_router  # noqa: E402
+
+app.include_router(jira_router)
 
 
 @app.get("/health")
