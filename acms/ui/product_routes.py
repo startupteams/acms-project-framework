@@ -135,6 +135,31 @@ async def product_create(request: Request,
     return RedirectSeeOther(f"/ui/products?bootstrap_request={rid}")
 
 
+@router.get("/usage")
+async def usage_page(request: Request,
+                     work_item_id: str | None = None,
+                     agent_id: str | None = None,
+                     model_id: str | None = None,
+                     since_days: int | None = None,
+                     user=Depends(current_user),
+                     db: AsyncSession = Depends(get_session)):
+    """§12.2/§12.3: honest usage view with Product/Work/Agent/model/date filters."""
+    from ..usage_service import usage_summary
+
+    s = await usage_summary(db, work_item_id=work_item_id or None,
+                            agent_id=agent_id or None, model_id=model_id or None,
+                            since_days=since_days)
+    context = {
+        "user": user,
+        "s": s["sessions"],
+        "by_model": s["by_model"],
+        "o": s["outcomes"],
+        "f": {"work_item_id": work_item_id, "agent_id": agent_id,
+              "model_id": model_id, "since_days": since_days},
+    }
+    return _templates().TemplateResponse(request, "usage.html", context)
+
+
 @router.get("/projects/{work_item_id}")
 async def project_detail(work_item_id: str, request: Request,
                          tab: str = "overview",
