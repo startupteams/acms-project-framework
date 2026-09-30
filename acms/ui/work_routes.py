@@ -53,6 +53,13 @@ def _badge(kind: str) -> str:
     return f"badge badge-{kind}"
 
 
+async def _work_prs(db, work_item_id: str) -> list[dict]:
+    """Linked PRs (economics pr_outcomes) — MERGED never shown as accepted."""
+    from ..work_board import work_prs
+
+    return await work_prs(db, work_item_id)
+
+
 async def _active_holds(db, work_item_id: str) -> list:
     """Un-cleared local holds (window-5 §13.3) for the detail page."""
     from sqlalchemy import select
@@ -123,6 +130,24 @@ async def work_list(
         "error": request.query_params.get("error"),
     }
     return _templates().TemplateResponse(request, "work_list.html", context)
+
+
+@router.get("/board")
+async def work_board(
+    request: Request,
+    user=Depends(current_user),
+    db: AsyncSession = Depends(get_session),
+):
+    """Operator board view (window-5 §6.3) — real facts only per card."""
+    from ..work_board import board_data
+
+    data = await board_data(db)
+    context = {
+        "user": user,
+        "columns": data["columns"],
+        "error": request.query_params.get("error"),
+    }
+    return _templates().TemplateResponse(request, "work_board.html", context)
 
 
 @router.get("/new")
@@ -244,6 +269,8 @@ async def work_detail(
         "rollup": rollup,
         # window-5 §13.3: persistent local holds (pause/stop) for this item
         "holds": (await _active_holds(db, work_item_id)),
+        # window-5 §6.5: linked PRs with objective outcome states
+        "prs": (await _work_prs(db, work_item_id)),
         "error": request.query_params.get("error"),
     }
     return _templates().TemplateResponse(request, "work_detail.html", context)
