@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block title %}Usage — ACMS{% endblock %}
+{% block content %}
+<h1>Usage / Economics</h1>
+<form method="get" action="/ui/usage" class="filter-form">
+  <label>Work <input name="work_item_id" value="{{ f.work_item_id or '' }}" placeholder="work item id"></label>
+  <label>Agent <input name="agent_id" value="{{ f.agent_id or '' }}" placeholder="agent id"></label>
+  <label>Model <input name="model_id" value="{{ f.model_id or '' }}" placeholder="model id"></label>
+  <label>Since (days) <input name="since_days" value="{{ f.since_days or '' }}" placeholder="30" style="width:80px"></label>
+  <button type="submit">Apply</button>
+  <a class="muted" href="/ui/usage">clear</a>
+</form>
+
+<section class="cards">
+  <div class="card"><h2>Sessions</h2><p class="big">{{ s.count }}</p>
+    <p class="muted">cost known {{ s.cost_known }} · unknown {{ s.cost_unknown }}</p></div>
+  <div class="card"><h2>Est. spend</h2><p class="big">${{ '%.4f'|format(s.est_cost_usd) if s.est_cost_usd is not none else '—' }}</p>
+    <p class="muted">cloud-identified ${{ '%.4f'|format(s.est_cloud_cost_usd) }}</p></div>
+  <div class="card"><h2>API tokens</h2><p class="big">{{ s.api_tokens }}</p></div>
+  <div class="card"><h2>Accepted PRs</h2><p class="big">{{ o.accepted }}</p>
+    <p class="muted">of {{ o.total }} recorded outcomes</p></div>
+  <div class="card"><h2>Cost / accepted PR</h2><p class="big">${{ '%.4f'|format(o.cost_per_accepted_pr_usd) if o.cost_per_accepted_pr_usd else 'null' }}</p>
+    <p class="muted">null when nothing is accepted — never a fabricated zero</p></div>
+</section>
+
+{% if by_model %}
+<section class="panel">
+  <h2>By model</h2>
+  <table class="data">
+    <thead><tr><th>Model</th><th>Sessions</th><th>API tokens</th><th>Est. cost (USD)</th></tr></thead>
+    <tbody>
+      {% for m, b in by_model.items() %}
+      <tr><td>{{ m }}</td><td>{{ b.sessions }}</td><td>{{ b.api_tokens }}</td>
+        <td>${{ '%.4f'|format(b.est_cost_usd) }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <p class="muted">Causal model comparison requires accepted-outcome correlation —
+  see <a href="/api/v1/economics/reports/model-comparison">model-comparison report</a>.</p>
+</section>
+{% endif %}
+
+<section class="panel">
+  <h2>Outcomes (objective states)</h2>
+  <table class="data"><tbody>
+    {% for st, n in o.states.items() %}
+    <tr><th>{{ st }}</th><td>{{ n }}</td></tr>
+    {% endfor %}
+  </tbody></table>
+  <p class="muted">MERGED is never displayed as accepted (§6.5); acceptance is human-authoritative.
+  Unknown cost is never converted to zero (§12.2).</p>
+</section>
+{% endblock %}

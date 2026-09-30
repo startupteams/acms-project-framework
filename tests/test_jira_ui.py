@@ -113,7 +113,19 @@ def test_work_board_renders_columns(gate_env, monkeypatch):
     assert "awaiting jira" in page.text  # unlinked = visibly non-executable
 
 
-async def test_products_nav_and_new_form(gate_env, monkeypatch):
+async def test_usage_page_renders_honest_nulls(gate_env, monkeypatch):
+    """§12.2: cost-per-accepted renders null with nothing accepted; unknown stays unknown."""
+    cookies = _login_admin(monkeypatch)
+    page = client.get("/ui/usage", cookies=cookies)
+    assert page.status_code == 200
+    assert "never a fabricated zero" in page.text
+    assert "MERGED is never displayed as accepted" in page.text
+    # filtered view also renders
+    page2 = client.get("/ui/usage?since_days=30", cookies=cookies)
+    assert page2.status_code == 200
+
+
+def test_products_nav_and_new_form(gate_env, monkeypatch):
     """§8.1 entry point + §8.4 review screen contract."""
     cookies = _login_admin(monkeypatch)
     page = client.get("/ui/products", cookies=cookies)
