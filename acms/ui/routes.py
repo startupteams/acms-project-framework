@@ -61,11 +61,13 @@ def install_ui(app) -> None:
     from .agent_routes import router as agent_router
     from .attention_routes import router as attention_router
     from .jira_routes import router as jira_router
+    from .product_routes import router as product_router
 
     app.include_router(work_router)
     app.include_router(agent_router)
     app.include_router(attention_router)
     app.include_router(jira_router)
+    app.include_router(product_router)
 
 
 def _deny_unmapped(request: Request, username: str) -> Response:

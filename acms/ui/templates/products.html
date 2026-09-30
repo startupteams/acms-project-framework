@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}Products — ACMS{% endblock %}
+{% block content %}
+<h1>Products & Projects</h1>
+{% if user.role == 'administrator' %}
+<section class="panel">
+  <a class="button" href="/ui/products/new">+ New Product / Idea</a>
+</section>
+{% endif %}
+{% if request.query_params.get('bootstrap_request') %}
+<section class="notice ok"><p>Bootstrap request <code>{{ request.query_params.get('bootstrap_request') }}</code> created —
+execution requires the Jira kickoff gate (human sets ready state + AI-account assignment, then Check Jira now).</p></section>
+{% endif %}
+{% if request.query_params.get('bootstrap') == 'awaiting' %}
+<section class="notice warn"><p>Bootstrap artifacts retained — <strong>Awaiting Jira linkage</strong>; execution stays blocked until the kickoff gate passes.</p></section>
+{% endif %}
+{% if error %}
+<section class="notice warn"><p>{{ error }}</p></section>
+{% endif %}
+
+{% if items %}
+<table class="data">
+  <thead><tr><th>Name</th><th>Kind</th><th>Status</th><th>Updated</th></tr></thead>
+  <tbody>
+    {% for i in items %}
+    <tr>
+      <td><a href="/ui/projects/{{ i.work_item_id }}">{{ i.title }}</a></td>
+      <td><span class="{{ 'badge badge-' ~ i.kind }}">{{ i.kind }}</span></td>
+      <td><span class="status status-{{ i.status }}">{{ i.status }}</span></td>
+      <td class="muted">{{ i.updated_at.strftime('%Y-%m-%d %H:%M') if i.updated_at }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="muted">No products/projects yet. Create one from a business idea.</p>
+{% endif %}
+{% endblock %}

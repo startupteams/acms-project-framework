@@ -74,6 +74,7 @@ class Settings(BaseSettings):
     jira_ready_statuses: str = "TO START"  # comma-separated ready-state names (verified per project)
     jira_reconcile_interval_hours: int = 24  # §13.6: durable poll cadence, capped at 24
     jira_reconcile_enabled: bool = True      # master switch for the durable scheduler
+    worker_model_profile: str = ""           # §12.1: model identity captured at session open
 
     # ADR-0012 completion callback (Accepted 2026-09-29): dedicated scoped
     # token for worker-runtime terminal-result delivery. Empty ⇒ the callback

@@ -76,6 +76,10 @@ from .jira_api import router as jira_router  # noqa: E402
 
 app.include_router(jira_router)
 
+from .bootstrap_api import router as bootstrap_router  # noqa: E402
+
+app.include_router(bootstrap_router)
+
 
 @app.get("/health")
 async def health() -> dict[str, str]:

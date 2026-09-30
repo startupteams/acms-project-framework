@@ -113,6 +113,76 @@ def test_work_board_renders_columns(gate_env, monkeypatch):
     assert "awaiting jira" in page.text  # unlinked = visibly non-executable
 
 
+async def test_products_nav_and_new_form(gate_env, monkeypatch):
+    """§8.1 entry point + §8.4 review screen contract."""
+    cookies = _login_admin(monkeypatch)
+    page = client.get("/ui/products", cookies=cookies)
+    assert page.status_code == 200
+    assert "+ New Product / Idea" in page.text
+    newp = client.get("/ui/products/new", cookies=cookies)
+    assert newp.status_code == 200
+    assert "Review idea" in newp.text
+
+
+def test_product_preview_classifies_draft(gate_env, monkeypatch):
+    """§8.4: the review screen shows the idea's own draft/unvalidated status."""
+    cookies = _login_admin(monkeypatch)
+    r = client.post("/ui/products/preview", cookies=cookies,
+                    data={"markdown": _fixture_like_markdown(), "product_name": ""})
+    assert r.status_code == 200
+    assert "draft/unvalidated" in r.text
+    assert "assumptions stay assumptions" in r.text
+    assert "TO START" in r.text  # kickoff requirement displayed
+
+
+def _fixture_like_markdown() -> str:
+    return """---
+title: "Probe Product Idea"
+slug: "probe-product-idea"
+status: "draft/unvalidated"
+goodness_score: 77
+validation_priority: "P1 - validate now"
+validation_next_step: "Interview 10 operators"
+---
+# Probe Product Idea
+
+## One-line summary
+
+A probe product.
+
+## Assumptions to validate
+
+1. People want this.
+"""
+
+
+async def test_project_detail_404_human(gate_env, monkeypatch):
+    """§14: unknown project → human 404 page, not raw JSON."""
+    cookies = _login_admin(monkeypatch)
+    r = client.get("/ui/projects/no-such-id", cookies=cookies)
+    assert r.status_code == 404
+
+
+async def test_project_detail_tabs(gate_env, monkeypatch, clean_db, db):
+    from datetime import datetime, timezone
+    from uuid import uuid4
+
+    cookies = _login_admin(monkeypatch)
+    now = datetime.now(timezone.utc)
+    pid = str(uuid4())
+    db.add(WorkItemRecord(work_item_id=pid, title="Probe Project", kind="project",
+                          created_at=now, updated_at=now))
+    await db.commit()
+    page = client.get(f"/ui/projects/{pid}", cookies=cookies)
+    assert page.status_code == 200
+    assert "overview" in page.text
+    page2 = client.get(f"/ui/projects/{pid}?tab=work", cookies=cookies)
+    assert page2.status_code == 200 and "Work under this project" in page2.text
+
+
+from acms.work_models import WorkItemRecord  # noqa: E402
+
+
 async def test_work_detail_pr_panel_merged_not_accepted(gate_env, monkeypatch, clean_db, db):
     """§6.5: MERGED is never displayed as accepted."""
     from datetime import datetime, timezone

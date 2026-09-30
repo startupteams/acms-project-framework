@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% block title %}New Product / Idea — ACMS{% endblock %}
+{% block content %}
+<h1>+ New Product / Idea</h1>
+<div><a href="/ui/products">← products</a></div>
+{% if error %}
+<section class="notice warn"><p>{{ error }}</p></section>
+{% endif %}
+
+{% if not preview %}
+<section class="panel">
+  <h2>Source idea (§8.2)</h2>
+  <form method="post" action="/ui/products/preview" class="stacked-form">
+    <label>Product name (optional — defaults to the idea title)
+      <input name="product_name" placeholder="e.g. Home-Service Missed-Call Agent Ops">
+    </label>
+    <label>Paste idea Markdown (or a Business Idea Generator brief)
+      <textarea name="markdown" rows="14" placeholder="Paste the idea brief including YAML frontmatter — the parser extracts ONLY metadata that actually exists"></textarea>
+    </label>
+    <button type="submit">Review idea (preview — nothing is created)</button>
+  </form>
+  <p class="muted">GitHub Business Idea Generator browsing is available via the API
+  (<code>GET /api/v1/bootstrap/ideas</code>) while repo read access for the configured token is
+  pending a web-UI grant (human gate).</p>
+</section>
+{% else %}
+<section class="panel" id="idea-review">
+  <h2>Idea review (§8.4) — edit before creating anything</h2>
+  <table class="data">
+    <tr><th>Source idea title</th><td>{{ preview.idea.title or '—' }}</td></tr>
+    <tr><th>Slug</th><td><code>{{ preview.idea.slug or '—' }}</code></td></tr>
+    <tr><th>Persona</th><td>{{ preview.idea.persona or '—' }}</td></tr>
+    <tr><th>Problem</th><td>{{ preview.idea.pain or '—' }}</td></tr>
+    <tr><th>Category</th><td>{{ preview.idea.category or '—' }}</td></tr>
+    <tr><th>Validation state</th><td><span class="badge">{{ preview.classification.source_status }}</span>
+      — {{ 'VALIDATED' if preview.classification.is_validated else 'NOT validated: assumptions stay assumptions (§9.2)' }}</td></tr>
+    <tr><th>Validation priority</th><td>{{ preview.classification.validation_priority }}</td></tr>
+    <tr><th>Next validation step</th><td>{{ preview.classification.validation_next_step }}</td></tr>
+    <tr><th>Goodness score</th><td>{{ preview.idea.goodness_score or '—' }} <span class="muted">(a score is not validation)</span></td></tr>
+    <tr><th>Proposed repository</th><td><code>startupteams/{{ preview.idea.slug or 'product' }}</code> — PRIVATE by default (§18)</td></tr>
+    <tr><th>Baseline docs</th><td>README / REQUIREMENTS (assumption-classified) / BUSINESS_PROBLEMS / ARCHITECTURE / FUTURE_WORK / INITIAL_IDEAS</td></tr>
+    <tr><th>Required Jira task</th><td>Link existing (key below) or create one high-level issue —
+      the human must then set it to the ready state (default <code>TO START</code>) assigned to
+      <code>startupteamscompany@gmail.com</code> before ANY AI execution</td></tr>
+    <tr><th>Proposed initial Work</th><td>“Produce human-reviewable product/requirements package” —
+      a measurable goal; NOT “build the whole product” (§10.2: the idea says validate first)</td></tr>
+  </table>
+
+  <form method="post" action="/ui/products/create" class="stacked-form">
+    <input type="hidden" name="markdown" value="{{ preview.markdown }}">
+    <label>Product name <input name="product_name" value="{{ preview.product_name }}" required></label>
+    <label>Jira issue key to LINK (optional — or check 'create' below)
+      <input name="jira_issue_key" placeholder="STNA-84"></label>
+    <label><input type="checkbox" name="create_jira" value="true" style="width:auto"> Create one high-level Jira issue (never sets ready state)</label>
+    <label>Executive Agent id (optional — assigns the initial Work Item)
+      <input name="executive_agent_id" placeholder="uuid"></label>
+    <label><input type="checkbox" name="execute" value="true" style="width:auto"> Run bootstrap now (repo + docs + ACMS hierarchy + Jira link — resumable; execution still requires the Jira gate)</label>
+    <button type="submit">Create</button>
+    <p class="muted">Nothing is deleted on failure: completed artifacts are retained and the request is
+    resumable (§9.5). A saved draft awaiting Jira linkage is visibly non-executable.</p>
+  </form>
+</section>
+{% endif %}
+{% endblock %}
