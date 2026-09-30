@@ -18,6 +18,14 @@ client = TestClient(app, follow_redirects=False)
 AI_ACCOUNT_ID = "712020:520fb263-ef0f-425c-a0be-14e9d258917e"
 
 
+@pytest.fixture()
+async def db():
+    from acms.db import get_session
+
+    async for session in get_session():
+        yield session
+
+
 @pytest.fixture(autouse=True)
 def gate_env(monkeypatch):
     monkeypatch.setenv("ACMS_JIRA_AI_ACCOUNT_ID", AI_ACCOUNT_ID)
@@ -90,3 +98,37 @@ def test_work_list_shows_jira_column_and_button(gate_env, monkeypatch):
     assert page.status_code == 200
     assert "Check Jira now" in page.text
     assert "Jira" in page.text
+
+
+def test_work_board_renders_columns(gate_env, monkeypatch):
+    """§6.3: board columns render; cards show real facts only."""
+    cookies = _login_admin(monkeypatch)
+    r = client.post("/api/v1/work/items", headers={"Authorization": "Bearer test-token"},
+                    json={"kind": "task", "title": "board card probe"})
+    wid = r.json()["work_item_id"]
+    page = client.get("/ui/work/board", cookies=cookies)
+    assert page.status_code == 200
+    assert "Planned" in page.text and "Active" in page.text and "Completed" in page.text
+    assert "board card probe" in page.text
+    assert "awaiting jira" in page.text  # unlinked = visibly non-executable
+
+
+async def test_work_detail_pr_panel_merged_not_accepted(gate_env, monkeypatch, clean_db, db):
+    """§6.5: MERGED is never displayed as accepted."""
+    from datetime import datetime, timezone
+
+    from acms.economics_models import PrOutcomeRecord
+
+    cookies = _login_admin(monkeypatch)
+    r = client.post("/api/v1/work/items", headers={"Authorization": "Bearer test-token"},
+                    json={"kind": "task", "title": "pr panel probe"})
+    wid = r.json()["work_item_id"]
+    now = datetime.now(timezone.utc)
+    db.add(PrOutcomeRecord(outcome_id=str(__import__("uuid").uuid4()),
+                            work_item_id=wid, pr_number=42, pr_url="https://github.com/x/pull/42",
+                            repository="startupteams/x", branch="feat/x",
+                            outcome_state="MERGED", created_at=now, updated_at=now))
+    await db.commit()
+    page = client.get(f"/ui/work/{wid}", cookies=cookies)
+    assert page.status_code == 200
+    assert "merged ≠ accepted" in page.text

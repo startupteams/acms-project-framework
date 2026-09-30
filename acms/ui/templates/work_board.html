@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block title %}Work board — ACMS{% endblock %}
+{% block content %}
+<h1>Work board</h1>
+<div>
+  <a href="/ui/work">list view</a> · <a href="/ui/work/board">board</a>
+  {% if user.role == 'administrator' %} · <a href="/ui/work/new">+ New work item</a>{% endif %}
+</div>
+
+<div class="board" style="display:flex;gap:.8rem;align-items:flex-start;margin-top:1rem;overflow-x:auto">
+  {% for col in columns %}
+  <div style="min-width:230px;flex:1">
+    <h2 style="font-size:.9rem">{{ col.label }} <span class="muted">({{ col.cards|length }})</span></h2>
+    {% for i in col.cards %}
+    <div class="card" style="margin-bottom:.6rem;padding:.7rem">
+      <div>
+        {% if i.work_key %}<code class="muted">{{ i.work_key }}</code>{% endif %}
+        <a href="/ui/work/{{ i.work_item_id }}"><strong>{{ i.title[:64] }}</strong></a>
+      </div>
+      <div class="muted" style="font-size:.78rem;margin-top:.3rem">
+        <span class="{{ 'badge badge-' ~ i.kind }}">{{ i.kind }}</span>
+        {% if i.worker %} · worker <code>{{ i.worker }}</code>{% endif %}
+        {% if i.budget_state %} · budget <span class="status status-{{ i.budget_state|lower }}">{{ i.budget_state }}</span>{% endif %}
+      </div>
+      <div style="font-size:.78rem;margin-top:.3rem">
+        {% if i.jira_issue_key %}
+          <a href="{{ i.jira_url or '#' }}">{{ i.jira_issue_key }}</a>
+          <span class="badge">{{ i.jira_eligibility or 'unchecked' }}</span>
+        {% else %}
+          <span class="badge">awaiting jira</span>
+        {% endif %}
+        {% if i.pr_count %}
+          · {{ i.pr_count }} PR{% if i.pr_merged %} ({{ i.pr_merged }} merged{% if i.pr_accepted %}, {{ i.pr_accepted }} accepted{% endif %}){% endif %}
+        {% endif %}
+      </div>
+      <div class="muted" style="font-size:.72rem;margin-top:.25rem">
+        updated {{ i.updated_at.strftime('%m-%d %H:%M') if i.updated_at }}
+      </div>
+    </div>
+    {% else %}
+    <p class="muted" style="font-size:.8rem">—</p>
+    {% endfor %}
+  </div>
+  {% endfor %}
+</div>
+<p class="muted">PR counts come from economics pr_outcomes; MERGED is never shown as accepted (§6.5).</p>
+{% endblock %}

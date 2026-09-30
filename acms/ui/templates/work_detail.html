@@ -304,6 +304,29 @@
   {% endif %}
 </section>
 
+<section class="panel" id="prs">
+  <h2>PRs / artifacts ({{ prs|length }})</h2>
+  {% if prs %}
+  <table class="data">
+    <thead><tr><th>PR</th><th>Repository</th><th>Branch</th><th>Outcome</th><th>Accepted</th></tr></thead>
+    <tbody>
+      {% for p in prs %}
+      <tr>
+        <td>{% if p.url %}<a href="{{ p.url }}">{{ p.pr_number or 'link' }}</a>{% else %}{{ p.pr_number or '—' }}{% endif %}</td>
+        <td>{{ p.repository or '—' }}</td>
+        <td><code>{{ p.branch or '—' }}</code></td>
+        <td><span class="badge">{{ p.outcome_state }}</span>
+            {% if p.outcome_state == 'MERGED' %}<span class="muted">(merged ≠ accepted)</span>{% endif %}</td>
+        <td class="muted">{{ p.accepted_by or '—' }} {{ p.accepted_at.strftime('%Y-%m-%d') if p.accepted_at }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted">No PRs linked yet (economics ingest correlates PRs to dispatched work).</p>
+  {% endif %}
+</section>
+
 <section class="panel">
   <h2>Handoffs ({{ handoffs|length }})</h2>
   {% if handoffs %}
