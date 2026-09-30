@@ -102,6 +102,54 @@ async def work_list(
     return _templates().TemplateResponse(request, "work_list.html", context)
 
 
+@router.get("/new")
+async def work_new_form(
+    request: Request,
+    user=Depends(current_user),
+    db: AsyncSession = Depends(get_session),
+):
+    _require_admin(user)
+    items = await work_service.list_work_items(db)
+    context = {
+        "user": user,
+        "item": None,
+        "parents": [{"work_item_id": i.work_item_id, "title": i.title} for i in items],
+        "kinds": _KINDS,
+        "statuses": _STATUSES,
+        "action": "/ui/work/new",
+        "error": request.query_params.get("error"),
+    }
+    return _templates().TemplateResponse(request, "work_form.html", context)
+
+
+@router.post("/new")
+async def work_create(
+    request: Request,
+    kind: str = Form(...),
+    parent_id: str = Form(""),
+    title: str = Form(...),
+    scope_markdown: str = Form(""),
+    user=Depends(current_user),
+    db: AsyncSession = Depends(get_session),
+):
+    _require_admin(user)
+    if kind not in _KINDS or not title.strip():
+        return RedirectWithError("/ui/work/new", "invalid kind or empty title")
+    payload = WorkItemCreate(
+        kind=WorkItemKind(kind),
+        parent_id=parent_id or None,
+        title=title.strip(),
+        # Provenance (ACMS-REQ-010/011): the acting human is recorded.
+        created_by=user.username,
+        scope_markdown=scope_markdown,
+    )
+    try:
+        record = await work_service.create_work_item(db, payload)
+    except ValueError as exc:
+        return RedirectWithError("/ui/work/new", str(exc))
+    return RedirectSeeOther(f"/ui/work/{record.work_item_id}")
+
+
 @router.get("/{work_item_id}")
 async def work_detail(
     request: Request,
@@ -174,54 +222,6 @@ async def work_detail(
         "error": request.query_params.get("error"),
     }
     return _templates().TemplateResponse(request, "work_detail.html", context)
-
-
-@router.get("/new")
-async def work_new_form(
-    request: Request,
-    user=Depends(current_user),
-    db: AsyncSession = Depends(get_session),
-):
-    _require_admin(user)
-    items = await work_service.list_work_items(db)
-    context = {
-        "user": user,
-        "item": None,
-        "parents": [{"work_item_id": i.work_item_id, "title": i.title} for i in items],
-        "kinds": _KINDS,
-        "statuses": _STATUSES,
-        "action": "/ui/work/new",
-        "error": request.query_params.get("error"),
-    }
-    return _templates().TemplateResponse(request, "work_form.html", context)
-
-
-@router.post("/new")
-async def work_create(
-    request: Request,
-    kind: str = Form(...),
-    parent_id: str = Form(""),
-    title: str = Form(...),
-    scope_markdown: str = Form(""),
-    user=Depends(current_user),
-    db: AsyncSession = Depends(get_session),
-):
-    _require_admin(user)
-    if kind not in _KINDS or not title.strip():
-        return RedirectWithError("/ui/work/new", "invalid kind or empty title")
-    payload = WorkItemCreate(
-        kind=WorkItemKind(kind),
-        parent_id=parent_id or None,
-        title=title.strip(),
-        # Provenance (ACMS-REQ-010/011): the acting human is recorded.
-        created_by=user.username,
-        scope_markdown=scope_markdown,
-    )
-    try:
-        record = await work_service.create_work_item(db, payload)
-    except ValueError as exc:
-        return RedirectWithError("/ui/work/new", str(exc))
-    return RedirectSeeOther(f"/ui/work/{record.work_item_id}")
 
 
 @router.post("/{work_item_id}/edit")

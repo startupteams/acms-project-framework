@@ -248,6 +248,37 @@ def test_work_detail_404(monkeypatch, ui_env):
     assert r.status_code == 404
 
 
+def test_work_new_form_renders(monkeypatch, ui_env):
+    """Window-5 §5 regression: GET /ui/work/new must render the form (200 HTML).
+
+    Bug: the route was registered AFTER /{work_item_id}, so FastAPI bound
+    work_item_id="new" and the handler returned 404 {"detail": "work item not
+    found"} — exactly the screenshot in the plan.
+    """
+    cookies = _login_admin(monkeypatch)
+    r = client.get("/ui/work/new", cookies=cookies)
+    assert r.status_code == 200
+    assert "text/html" in r.headers["content-type"]
+    assert 'action="/ui/work/new"' in r.text
+
+
+def test_work_new_form_admin_only(monkeypatch, ui_env):
+    """Worker/observer hitting GET /new gets 403, not a JSON ID-lookup 404."""
+    cookies = _login_other(monkeypatch, WORKER_DN, "worker")
+    r = client.get("/ui/work/new", cookies=cookies)
+    assert r.status_code == 403
+
+
+def test_real_id_and_unknown_id_distinct(monkeypatch, ui_env):
+    """§5.2: real id → 200, unknown id → 404, static /new → 200 — all three coexist."""
+    cookies = _login_admin(monkeypatch)
+    item_id = _make_item(title="Route-order probe")
+    assert client.get(f"/ui/work/{item_id}", cookies=cookies).status_code == 200
+    r = client.get("/ui/work/does-not-exist", cookies=cookies, follow_redirects=False)
+    assert r.status_code == 404
+    assert client.get("/ui/work/new", cookies=cookies).status_code == 200
+
+
 # ---------------------------------------------------------------- hierarchy + handoffs
 
 
