@@ -19,6 +19,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .memory_models import ExecutionSessionRecord
+from .settings import get_settings
 from .telemetry_service import add_event, _now
 
 
@@ -49,6 +50,10 @@ async def open_session_for_dispatch(
         a2a_task_id=str(a2a_task_id) if a2a_task_id else None,
         harness_session_id=harness_session_id,
         status="OPEN", started_at=_now(),
+        # window-5 §12.1: capture the model identity at session open when the
+        # configured worker model profile is known (workers refine via
+        # telemetry model_id; UNKNOWN stays NULL — never fabricated).
+        model_id=get_settings().worker_model_profile or None,
     )
     db.add(rec)
     await add_event(db, event_type="EXECUTION_SESSION_OPENED", actor_source="dispatch_lifecycle",

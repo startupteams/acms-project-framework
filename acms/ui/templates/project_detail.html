@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+{% block title %}{{ item.title }} — ACMS{% endblock %}
+{% block content %}
+<h1>{{ item.title }} <span class="{{ 'badge badge-' ~ item.kind }}">{{ item.kind }}</span>
+  <span class="status status-{{ item.status }}">{{ item.status }}</span></h1>
+<div><a href="/ui/products">← products</a> · <a href="/ui/work/{{ item.work_item_id }}">work detail</a></div>
+
+<div style="margin:.8rem 0">
+  {% for t in ('overview', 'work', 'prs', 'requirements') %}
+  <a class="button {{ 'secondary' if tab != t }}" href="/ui/projects/{{ item.work_item_id }}?tab={{ t }}"
+     style="margin-right:.4rem;text-decoration:none;padding:.3rem .7rem;border:1px solid #30363d;border-radius:6px">{{ t }}</a>
+  {% endfor %}
+</div>
+
+{% if tab == 'overview' %}
+<section class="cards">
+  <div class="card"><h2>Children</h2><p class="big">{{ children|length }}</p></div>
+  <div class="card"><h2>PRs</h2><p class="big">{{ prs|length }}</p></div>
+  <div class="card"><h2>Jira</h2><p class="big">{% if item.jira_issue_key %}<a href="{{ item.jira_url }}">{{ item.jira_issue_key }}</a>{% else %}—{% endif %}</p></div>
+  <div class="card"><h2>Eligibility</h2><p class="big">{{ item.jira_eligibility or 'unchecked' }}</p></div>
+</section>
+<section class="panel"><h2>Scope</h2><div class="markdown">{{ item.scope_markdown or '*no scope recorded*' }}</div></section>
+{% elif tab == 'work' %}
+<section class="panel">
+  <h2>Work under this project</h2>
+  {% if children %}
+  <table class="data">
+    <thead><tr><th>Title</th><th>Kind</th><th>Status</th><th>Jira</th></tr></thead>
+    <tbody>
+      {% for c in children %}
+      <tr>
+        <td><a href="/ui/work/{{ c.work_item_id }}">{{ c.title }}</a></td>
+        <td><span class="{{ 'badge badge-' ~ c.kind }}">{{ c.kind }}</span></td>
+        <td><span class="status status-{{ c.status }}">{{ c.status }}</span></td>
+        <td>{% if c.jira_issue_key %}<a href="{{ c.jira_url }}">{{ c.jira_issue_key }}</a>{% else %}—{% endif %}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}<p class="muted">No child work items yet.</p>{% endif %}
+</section>
+{% elif tab == 'prs' %}
+<section class="panel">
+  <h2>PRs / artifacts</h2>
+  {% if prs %}
+  <table class="data">
+    <thead><tr><th>PR</th><th>Outcome</th><th>Accepted</th></tr></thead>
+    <tbody>
+      {% for p in prs %}
+      <tr><td>{% if p.url %}<a href="{{ p.url }}">{{ p.pr_number or 'link' }}</a>{% else %}{{ p.pr_number or '—' }}{% endif %}</td>
+        <td><span class="badge">{{ p.outcome_state }}</span>{% if p.outcome_state == 'MERGED' %} <span class="muted">(merged ≠ accepted)</span>{% endif %}</td>
+        <td class="muted">{{ p.accepted_by or '—' }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}<p class="muted">No PRs linked.</p>{% endif %}
+</section>
+{% elif tab == 'requirements' %}
+<section class="panel">
+  <h2>Requirements (draft material — honesty preserved)</h2>
+  <p class="muted">Requirements live in the product repository (REQUIREMENTS.md with
+  assumption/research-question classification — never promoted automatically).
+  The bootstrap request records the idea provenance and validation priority.</p>
+  <div class="markdown">{{ item.scope_markdown or '*no scope recorded*' }}</div>
+</section>
+{% endif %}
+{% endblock %}
