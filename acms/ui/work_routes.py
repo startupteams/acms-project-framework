@@ -53,6 +53,20 @@ def _badge(kind: str) -> str:
     return f"badge badge-{kind}"
 
 
+async def _active_holds(db, work_item_id: str) -> list:
+    """Un-cleared local holds (window-5 §13.3) for the detail page."""
+    from sqlalchemy import select
+
+    from ..jira_models import WorkRuntimeHoldRecord
+
+    return list((await db.scalars(
+        select(WorkRuntimeHoldRecord)
+        .where(WorkRuntimeHoldRecord.work_item_id == work_item_id)
+        .where(WorkRuntimeHoldRecord.cleared_at.is_(None))
+        .order_by(WorkRuntimeHoldRecord.created_at.desc())
+    )).all())
+
+
 def _view_item(record, parent_title: str | None = None) -> dict:
     return {
         "work_item_id": record.work_item_id,
@@ -66,6 +80,15 @@ def _view_item(record, parent_title: str | None = None) -> dict:
         "scope_markdown": record.scope_markdown,
         "created_at": record.created_at,
         "updated_at": record.updated_at,
+        # window-5 §7: Jira kickoff linkage + eligibility observation
+        "jira_issue_key": getattr(record, "jira_issue_key", None),
+        "jira_issue_id": getattr(record, "jira_issue_id", None),
+        "jira_url": getattr(record, "jira_url", None),
+        "jira_last_status": getattr(record, "jira_last_status", None),
+        "jira_last_assignee_account_id": getattr(record, "jira_last_assignee_account_id", None),
+        "jira_last_checked_at": getattr(record, "jira_last_checked_at", None),
+        "jira_eligibility": getattr(record, "jira_eligibility", None),
+        "jira_eligibility_reason": getattr(record, "jira_eligibility_reason", None),
     }
 
 
@@ -219,6 +242,8 @@ async def work_detail(
         "close_statuses": _CLOSE_STATUSES,
         "budget": budget,
         "rollup": rollup,
+        # window-5 §13.3: persistent local holds (pause/stop) for this item
+        "holds": (await _active_holds(db, work_item_id)),
         "error": request.query_params.get("error"),
     }
     return _templates().TemplateResponse(request, "work_detail.html", context)

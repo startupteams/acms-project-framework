@@ -26,6 +26,67 @@
   </div>
 </section>
 
+<section class="panel" id="jira-kickoff">
+  <h2>Jira kickoff (window-5 §7)</h2>
+  {% if item.jira_issue_key %}
+  <p>
+    <a href="{{ item.jira_url or '#' }}">{{ item.jira_issue_key }}</a> —
+    last observed status: <strong>{{ item.jira_last_status or 'never checked' }}</strong>,
+    AI-account assignee: <strong>{{ 'yes' if item.jira_last_assignee_account_id else 'unknown' }}</strong>,
+    checked {{ item.jira_last_checked_at.strftime('%Y-%m-%d %H:%M') if item.jira_last_checked_at else 'never' }}.
+  </p>
+  <p>Eligibility: <span class="badge">{{ item.jira_eligibility or 'unchecked' }}</span>
+  {% if item.jira_eligibility_reason %}<span class="muted">{{ item.jira_eligibility_reason }}</span>{% endif %}</p>
+  {% else %}
+  <p class="notice warn">Awaiting Jira linkage — this work item is NOT executable.
+  Link the high-level Jira issue; a human must set it to the ready state
+  (default <code>TO START</code>) assigned to <code>startupteamscompany@gmail.com</code>.
+  Drafts stay visibly non-executable.</p>
+  {% endif %}
+  {% if holds %}
+  <h3>Active holds</h3>
+  <table class="data">
+    <thead><tr><th>Kind</th><th>Reason</th><th>By</th><th>Set</th><th>Ack</th><th></th></tr></thead>
+    <tbody>
+      {% for h in holds %}
+      <tr>
+        <td><span class="badge">{{ h.hold_kind }}</span></td>
+        <td>{{ h.reason }}</td>
+        <td>{{ h.created_by }}</td>
+        <td class="muted">{{ h.created_at.strftime('%Y-%m-%d %H:%M') if h.created_at }}</td>
+        <td>{{ 'verified' if h.runtime_acknowledged else 'requested' }}</td>
+        <td>
+          {% if user.role == 'administrator' %}
+          <form method="post" action="/ui/jira/work/{{ item.work_item_id }}/holds/{{ h.hold_id }}/clear" class="inline-form">
+            <button type="submit" class="button-small">Clear (operator action)</button>
+          </form>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+  {% if user.role == 'administrator' %}
+  <details>
+    <summary>Link / set Jira hold</summary>
+    <form method="post" action="/ui/jira/work/{{ item.work_item_id }}/link" class="stacked-form">
+      <label>Jira issue key <input name="issue_key" placeholder="STNA-84" required></label>
+      <button type="submit">Link existing issue</button>
+      <p class="muted">Creating or linking a ticket does NOT authorize execution — the human sets its ready state and AI-account assignment in Jira, then uses Check Jira now.</p>
+    </form>
+    <form method="post" action="/ui/jira/work/{{ item.work_item_id }}/hold" class="stacked-form">
+      <label>Hold
+        <select name="hold_kind"><option value="PAUSE">PAUSE</option><option value="STOP">STOP</option></select>
+      </label>
+      <label>Reason <input name="reason" placeholder="why"></label>
+      <button type="submit">Set persistent hold</button>
+      <p class="muted">Survives restarts and polls; only an explicit clear removes it.</p>
+    </form>
+  </details>
+  {% endif %}
+</section>
+
 <section class="panel">
   <h2>Scope</h2>
   <div class="markdown">{{ item.scope_markdown or "*no scope recorded*" }}</div>
