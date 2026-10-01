@@ -14,7 +14,7 @@ import uuid
 import pytest
 
 from acms.completion_callback import CompletionCallbackRequest, process_completion_callback
-from acms.economics_models import CostAttributionRecord
+from acms.economics_models import CostAttributionRecord, PrOutcomeRecord
 from acms.work_models import ExecutionTaskRecord
 
 from .conftest import clean_db  # noqa: F401  (fixture import)
@@ -65,3 +65,9 @@ async def test_usage_capture_outcome_id_fits_varchar36(db):
     assert rows[0].input_tokens == 13592
     assert rows[0].output_tokens == 72
     assert rows[0].provider == "local"
+
+    # FK satisfied: the execution-outcome row exists (OPEN, linked to the task)
+    outcome = await db.get(PrOutcomeRecord, task.task_id)
+    assert outcome is not None
+    assert outcome.outcome_state == "OPEN"
+    assert outcome.task_category == "execution"

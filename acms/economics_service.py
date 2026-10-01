@@ -260,8 +260,29 @@ async def record_execution_usage(db: AsyncSession, *, task, session_id: str | No
     """
     if not usage and session_id is None:
         return None
-    from .economics_models import CostAttributionRecord
+    from .economics_models import CostAttributionRecord, PrOutcomeRecord, OUTCOME_OPEN
 
+    # cost_attribution.outcome_id carries an FK to pr_outcomes.outcome_id — a
+    # synthetic non-existent id violates it (hit live 2026-10-01 after the
+    # varchar(36) overflow fix: ForeignKeyViolationError poisoned the callback
+    # session the same way). Create the execution-outcome row first: one OPEN
+    # outcome per execution task, linked to the work item + agent so the
+    # §26 pipeline can later upgrade it (MERGED/ACCEPTED) instead of inventing
+    # a second link step.
+    outcome = (await db.scalars(
+        select(PrOutcomeRecord).where(PrOutcomeRecord.outcome_id == task.task_id)
+    )).first()
+    if outcome is None:
+        db.add(PrOutcomeRecord(
+            outcome_id=task.task_id,
+            work_item_id=getattr(task, "work_item_id", None),
+            agent_id=getattr(task, "agent_id", None),
+            model_id=task.effective_model,
+            provider="local" if task.effective_model else None,
+            task_category="execution",
+            outcome_state=OUTCOME_OPEN,
+        ))
+        await db.flush()
     entry = CostAttributionRecord(
         entry_id=CostAttributionRecord.new_id(),
         # outcome_id is varchar(36) — "task:<uuid>" is 41 chars and overflows
