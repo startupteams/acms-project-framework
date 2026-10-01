@@ -111,17 +111,23 @@ class TelemetryScheduler:
 
         async with self._session_factory() as db:
             agents = (await db.scalars(select(AgentRecord))).all()
-            for agent in agents:
-                if agent.trust_class != "internal":
-                    continue
+            # snapshot identity fields BEFORE any commit in the loop: ingest()
+            # commits and SQLAlchemy expires all loaded instances, so touching
+            # .trust_class afterwards triggers a lazy load in async context
+            # (MissingGreenlet class — hit live on prod 2026-10-01).
+            agent_ids = [str(a.agent_id) for a in agents
+                         if getattr(a, "trust_class", None) == "internal"]
+            await db.commit()  # end the read cleanly
+        for agent_id in agent_ids:
+            try:
+                payload = await self._fetch_worker_status(agent_id)
+            except Exception:  # noqa: BLE001 — unreachable: honest absence
+                continue
+            if payload is None:
+                continue
+            async with self._session_factory() as db:
                 try:
-                    payload = await self._fetch_worker_status(str(agent.agent_id))
-                except Exception:  # noqa: BLE001 — unreachable: honest absence
-                    continue
-                if payload is None:
-                    continue
-                try:
-                    await TelemetryService.ingest_heartbeat(db, str(agent.agent_id), payload)
+                    await TelemetryService.ingest_heartbeat(db, agent_id, payload)
                     await db.commit()
                 except Exception:  # noqa: BLE001
                     await db.rollback()
