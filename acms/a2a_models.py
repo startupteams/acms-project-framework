@@ -179,6 +179,10 @@ class ArtifactRecord(Base):
     __tablename__ = "artifacts"
 
     artifact_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    # Immutable human UID (STEA-004 plan §7): ACMS-ARTIFACT-######-YYYYMMDD_HHMMSS.
+    artifact_uid: Mapped[str | None] = mapped_column(String(64), unique=True, nullable=True, index=True)
+    # Monotonic sequence number backing artifact_uid (§7 backfill determinism).
+    artifact_sequence: Mapped[int | None] = mapped_column(nullable=True)
     work_item_id: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("work_items.work_item_id", ondelete="SET NULL"),
         nullable=True, index=True,

@@ -234,8 +234,13 @@ async def ui_inbox_context(item_id: str, user=Depends(current_user),
         parts += ["", "## Event trail", "```json", _json.dumps(meta, indent=1, default=str)[:3000], "```"]
     parts += ["", "## Decision points", "- (human completes this section)"]
     content = "\n".join(parts)
+    from ..uid_keys import allocate_artifact_uid
+
+    _seq, _uid = await allocate_artifact_uid(db, ArtifactRecord.now())
     art = ArtifactRecord(
-        artifact_id=ArtifactRecord.new_id(), work_item_id=rec.work_item_id,
+        artifact_id=ArtifactRecord.new_id(),
+        artifact_uid=_uid, artifact_sequence=_seq,
+        work_item_id=rec.work_item_id,
         agent_id=rec.agent_id, project_id=rec.project_id, product_id=rec.product_id,
         jira_issue_key=rec.jira_issue_key, artifact_type="context",
         title=f"Context: {rec.title[:200]}", content=content,
@@ -270,11 +275,12 @@ async def ui_artifacts(request: Request, user=Depends(current_user),
 async def ui_artifact_detail(request: Request, artifact_id: str,
                              user=Depends(current_user),
                              db: AsyncSession = Depends(get_session)):
-    rec = await db.get(ArtifactRecord, artifact_id)
+    rec = await _resolve_artifact(db, artifact_id)
     if rec is None:
         return RedirectResponse("/ui/artifacts", status_code=303)
     context = _base_context(user) | {
-        "a": {"artifact_id": rec.artifact_id, "title": rec.title, "bluf": rec.bluf,
+        "a": {"artifact_id": rec.artifact_id, "artifact_uid": rec.artifact_uid,
+              "title": rec.title, "bluf": rec.bluf,
               "content": rec.content, "sha256": rec.sha256,
               "jira_issue_key": rec.jira_issue_key, "work_item_id": rec.work_item_id,
               "created_by": rec.created_by,
@@ -283,10 +289,27 @@ async def ui_artifact_detail(request: Request, artifact_id: str,
     return templates.TemplateResponse(request, "artifact_detail.html", context)
 
 
+async def _resolve_artifact(db: AsyncSession, artifact_id: str):
+    """Accept internal UUID, full ACMS-ARTIFACT-… UID, or sha256 prefix (plan §8)."""
+    from sqlalchemy import select as _select
+
+    rec = await db.get(ArtifactRecord, artifact_id)
+    if rec is None and artifact_id.startswith("ACMS-"):
+        rec = (await db.scalars(
+            _select(ArtifactRecord).where(ArtifactRecord.artifact_uid == artifact_id).limit(1)
+        )).first()
+    if rec is None and len(artifact_id) >= 8:
+        rec = (await db.scalars(
+            _select(ArtifactRecord)
+            .where(ArtifactRecord.sha256.startswith(artifact_id)).limit(1)
+        )).first()
+    return rec
+
+
 @router.get("/artifacts/{artifact_id}/download")
 async def ui_artifact_download(artifact_id: str, user=Depends(current_user),
                                db: AsyncSession = Depends(get_session)):
-    rec = await db.get(ArtifactRecord, artifact_id)
+    rec = await _resolve_artifact(db, artifact_id)
     if rec is None:
         return RedirectResponse("/ui/artifacts", status_code=303)
     from urllib.parse import quote

@@ -181,6 +181,21 @@ async def process_completion_callback(db: AsyncSession, payload: CompletionCallb
         pass  # economics usage capture ships with the §26 pipeline
     except Exception:  # noqa: BLE001 — usage capture never breaks completion
         pass
+
+    # ---- canonical work handoff (STEA-004 plan §9) ---------------------------
+    # Every terminal Work Item gets exactly one canonical Markdown handoff.
+    # Never breaks completion (swallows + audits internally).
+    try:
+        from .canonical_handoff import generate_canonical_handoff
+
+        await generate_canonical_handoff(
+            db, task=task, status=payload.status, completed_at=completed_at,
+            error_summary=payload.error_summary,
+            usage_reference=payload.usage_reference,
+            handoff_reference=payload.handoff_reference,
+        )
+    except Exception:  # noqa: BLE001 — belt & braces around the never-raise helper
+        pass
     await db.commit()
     return {"result": "closed", "task_id": task.task_id,
             "task_status": task.status, "session_id": session_id}

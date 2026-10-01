@@ -40,6 +40,11 @@ class WorkItemRecord(Base):
     # Immutable human-readable key (ACMS-REQ-052): ACMS-WORK-000001 style.
     # Nullable for pre-slice rows; allocated durably via acms/work_keys.py.
     work_key: Mapped[str | None] = mapped_column(String(32), unique=True, nullable=True, index=True)
+    # Immutable human UID (STEA-004 plan §6): ACMS-WORK-######-YYYYMMDD_HHMMSS.
+    # Same sequence as work_key; UUID remains THE identity (REQ-001).
+    work_uid: Mapped[str | None] = mapped_column(String(64), unique=True, nullable=True, index=True)
+    # Monotonic sequence number backing work_uid (§6 backfill determinism).
+    work_sequence: Mapped[int | None] = mapped_column(nullable=True)
     parent_id: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("work_items.work_item_id", ondelete="SET NULL"), nullable=True, index=True
     )
@@ -203,6 +208,8 @@ class WorkItemResponse(BaseModel):
     scope_markdown: str
     created_at: datetime
     updated_at: datetime
+    work_key: str | None = None
+    work_uid: str | None = None
 
 
 class AssignmentCreate(BaseModel):
