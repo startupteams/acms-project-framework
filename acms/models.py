@@ -22,6 +22,8 @@ class AgentRecord(Base):
     agent_id: Mapped[str] = mapped_column(String(36), primary_key=True)
     external_registration_id: Mapped[str] = mapped_column(String(255), unique=True, index=True)
     display_name: Mapped[str] = mapped_column(String(255))
+    legacy_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    worker_uid: Mapped[str | None] = mapped_column(String(16), nullable=True, index=True)
     trust_class: Mapped[str] = mapped_column(String(32))
     harness: Mapped[str] = mapped_column(String(128))
     bridge_version: Mapped[str] = mapped_column(String(64))
@@ -56,6 +58,8 @@ class AgentCapabilities(BaseModel):
 class AgentRegistrationRequest(BaseModel):
     external_registration_id: str = Field(min_length=1, max_length=255)
     display_name: str = Field(min_length=1, max_length=255)
+    legacy_name: str | None = Field(default=None, max_length=255)
+    worker_uid: str | None = Field(default=None, max_length=16)
     trust_class: TrustClass
     harness: str = Field(min_length=1, max_length=128)
     bridge_version: str = Field(min_length=1, max_length=64)
@@ -65,10 +69,21 @@ class AgentRegistrationRequest(BaseModel):
     capabilities: AgentCapabilities = Field(default_factory=AgentCapabilities)
 
 
+class AgentDisplayNamePatch(BaseModel):
+    """Durable-UID naming (STEA-004 §9): identity fields are IMMUTABLE —
+    agent_id / external_registration_id never change. Only display metadata
+    (display_name / legacy_name / worker_uid) is patchable."""
+    display_name: str = Field(min_length=1, max_length=255)
+    legacy_name: str | None = Field(default=None, max_length=255)
+    worker_uid: str | None = Field(default=None, max_length=16)
+
+
 class AgentResponse(BaseModel):
     agent_id: str
     external_registration_id: str
     display_name: str
+    legacy_name: str | None = None
+    worker_uid: str | None = None
     trust_class: TrustClass
     harness: str
     bridge_version: str

@@ -1,13 +1,13 @@
 from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI, Response, status
+from fastapi import Depends, FastAPI, HTTPException, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from . import __version__
 from .build_info import as_dict as build_identity
 from .db import get_session
-from .models import AgentRegistrationRequest, AgentResponse
-from .registry import list_agents, register_agent
+from .models import AgentDisplayNamePatch, AgentRegistrationRequest, AgentResponse
+from .registry import list_agents, patch_agent_display, register_agent
 from .security import require_admin_token
 from .ui.routes import install_ui
 from .work_api import router as work_router
@@ -113,3 +113,21 @@ async def agents(
     _: None = Depends(require_admin_token),
 ) -> list[AgentResponse]:
     return await list_agents(db)
+
+
+@app.patch("/api/v1/agents/{agent_id}", response_model=AgentResponse)
+async def patch_agent(
+    agent_id: str,
+    payload: AgentDisplayNamePatch,
+    db: AsyncSession = Depends(get_session),
+    _: None = Depends(require_admin_token),
+) -> AgentResponse:
+    """Rename display metadata for an agent (durable-UID naming, STEA-004 §9).
+
+    The persistent identity (agent_id UUID, external_registration_id) is
+    IMMUTABLE (REQ-001) — only display_name / legacy_name / worker_uid change.
+    """
+    agent = await patch_agent_display(db, agent_id, payload)
+    if agent is None:
+        raise HTTPException(status_code=404, detail="agent not found")
+    return agent

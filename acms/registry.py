@@ -3,7 +3,13 @@ import json
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .models import AgentCapabilities, AgentRecord, AgentRegistrationRequest, AgentResponse
+from .models import (
+    AgentCapabilities,
+    AgentDisplayNamePatch,
+    AgentRecord,
+    AgentRegistrationRequest,
+    AgentResponse,
+)
 
 
 def _to_response(record: AgentRecord) -> AgentResponse:
@@ -11,6 +17,8 @@ def _to_response(record: AgentRecord) -> AgentResponse:
         agent_id=record.agent_id,
         external_registration_id=record.external_registration_id,
         display_name=record.display_name,
+        legacy_name=record.legacy_name,
+        worker_uid=record.worker_uid,
         trust_class=record.trust_class,
         harness=record.harness,
         bridge_version=record.bridge_version,
@@ -32,6 +40,10 @@ async def register_agent(db: AsyncSession, request: AgentRegistrationRequest) ->
 
     if existing:
         existing.display_name = request.display_name
+        if request.legacy_name is not None:
+            existing.legacy_name = request.legacy_name
+        if request.worker_uid is not None:
+            existing.worker_uid = request.worker_uid
         existing.trust_class = request.trust_class.value
         existing.harness = request.harness
         existing.bridge_version = request.bridge_version
@@ -48,6 +60,8 @@ async def register_agent(db: AsyncSession, request: AgentRegistrationRequest) ->
         agent_id=AgentRecord.new_id(),
         external_registration_id=request.external_registration_id,
         display_name=request.display_name,
+        legacy_name=request.legacy_name,
+        worker_uid=request.worker_uid,
         trust_class=request.trust_class.value,
         harness=request.harness,
         bridge_version=request.bridge_version,
@@ -67,3 +81,18 @@ async def register_agent(db: AsyncSession, request: AgentRegistrationRequest) ->
 async def list_agents(db: AsyncSession) -> list[AgentResponse]:
     result = await db.scalars(select(AgentRecord).order_by(AgentRecord.created_at))
     return [_to_response(x) for x in result.all()]
+
+
+async def patch_agent_display(db: AsyncSession, agent_id: str, patch: AgentDisplayNamePatch) -> AgentResponse | None:
+    """Update display metadata ONLY (REQ-001: persistent identity is the
+    agent_id/UUID; it never changes). Returns None when the agent is unknown."""
+    record = await db.get(AgentRecord, agent_id)
+    if record is None:
+        return None
+    record.display_name = patch.display_name
+    record.legacy_name = patch.legacy_name
+    record.worker_uid = patch.worker_uid
+    record.updated_at = AgentRecord.now()
+    await db.commit()
+    await db.refresh(record)
+    return _to_response(record)

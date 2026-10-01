@@ -11,6 +11,8 @@
     <p><strong>Trust class:</strong> <span class="trust trust-{{ agent.trust_class }}">{{ agent.trust_class }}</span></p>
     <p><strong>Harness:</strong> {{ agent.harness }}</p>
     <p><strong>Bridge / protocol:</strong> {{ agent.bridge_version }} / {{ agent.protocol_version }}</p>
+    {% if agent.worker_uid %}<p><strong>Worker UID:</strong> <code>{{ agent.worker_uid }}</code> <span class="muted">(durable identifier)</span></p>{% endif %}
+    {% if agent.legacy_name %}<p><strong>Legacy name:</strong> <code>{{ agent.legacy_name }}</code> <span class="muted">(compatibility alias)</span></p>{% endif %}
     <p class="muted">Registered {{ agent.created_str }} &middot; updated {{ agent.updated_str }}</p>
     {% if agent.card_url %}<p><strong>Card:</strong> <code>{{ agent.card_url }}</code></p>{% endif %}
   </div>
