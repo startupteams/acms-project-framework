@@ -184,6 +184,146 @@ async def get_product(product_id: str, db: AsyncSession = Depends(get_session)):
     return _product_resp(rec)
 
 
+# ---------------------------------------------------------------- repositories + slop (STEA-004 §15/§16)
+
+
+class RepositoryCreate(BaseModel):
+    owner: str = Field(min_length=1, max_length=128)
+    repo: str = Field(min_length=1, max_length=128)
+    canonical_url: str | None = Field(default=None, max_length=512)
+
+
+class RepositoryResponse(BaseModel):
+    repository_id: str
+    owner: str
+    repo: str
+    canonical_url: str | None
+    default_branch: str | None
+    last_commit_sha: str | None
+    last_measured_at: datetime | None
+    last_loc: int | None
+    last_total_adr_count: int | None
+    last_human_adr_count: int | None
+
+
+class RepositoryLinkRequest(BaseModel):
+    repository_id: str = Field(max_length=36)
+
+
+def _repo_resp(r) -> RepositoryResponse:
+    return RepositoryResponse(
+        repository_id=r.repository_id, owner=r.owner, repo=r.repo,
+        canonical_url=r.canonical_url, default_branch=r.default_branch,
+        last_commit_sha=r.last_commit_sha, last_measured_at=r.last_measured_at,
+        last_loc=r.last_loc, last_total_adr_count=r.last_total_adr_count,
+        last_human_adr_count=r.last_human_adr_count)
+
+
+@router.post("/repositories", response_model=RepositoryResponse, status_code=201)
+async def create_repository(body: RepositoryCreate, db: AsyncSession = Depends(get_session)):
+    from .slop_metrics import RepositoryRecord, get_or_create_repository
+
+    rec = await get_or_create_repository(db, body.owner, body.repo, body.canonical_url)
+    await db.commit()
+    await db.refresh(rec)
+    return _repo_resp(rec)
+
+
+@router.get("/repositories", response_model=list[RepositoryResponse])
+async def list_repositories(db: AsyncSession = Depends(get_session)):
+    from .slop_metrics import RepositoryRecord
+
+    rows = (await db.scalars(select(RepositoryRecord).order_by(RepositoryRecord.owner, RepositoryRecord.repo))).all()
+    return [_repo_resp(r) for r in rows]
+
+
+@router.post("/repositories/{repository_id}/refresh", response_model=list[dict])
+async def refresh_one_repository(repository_id: str, db: AsyncSession = Depends(get_session)):
+    from .slop_metrics import refresh_repository_metrics
+
+    out = await refresh_repository_metrics(db, repository_id)
+    if not out:
+        raise HTTPException(404, "unknown repository")
+    return out
+
+
+@router.post("/repository-metrics/refresh", response_model=list[dict])
+async def refresh_all_repository_metrics(db: AsyncSession = Depends(get_session)):
+    """§16 Refresh-now (manual trigger; hourly scheduler is future wiring)."""
+    from .slop_metrics import refresh_repository_metrics
+
+    return await refresh_repository_metrics(db)
+
+
+@router.post("/products/{product_id}/repositories", status_code=201)
+async def link_product_repository(product_id: str, body: RepositoryLinkRequest,
+                                  db: AsyncSession = Depends(get_session)):
+    from .slop_metrics import ProductRepositoryLink, RepositoryRecord
+
+    if await db.get(ProductRecord, product_id) is None:
+        raise HTTPException(404, "unknown product")
+    if await db.get(RepositoryRecord, body.repository_id) is None:
+        raise HTTPException(404, "unknown repository")
+    exists = (await db.scalars(
+        select(ProductRepositoryLink)
+        .where(ProductRepositoryLink.product_id == product_id,
+               ProductRepositoryLink.repository_id == body.repository_id))).first()
+    if exists is None:
+        db.add(ProductRepositoryLink(product_id=product_id, repository_id=body.repository_id))
+        await db.commit()
+    return {"linked": True}
+
+
+@router.delete("/products/{product_id}/repositories/{repository_id}", status_code=204)
+async def unlink_product_repository(product_id: str, repository_id: str,
+                                    db: AsyncSession = Depends(get_session)):
+    from .slop_metrics import ProductRepositoryLink
+    from sqlalchemy import delete as _delete
+
+    await db.execute(_delete(ProductRepositoryLink).where(
+        ProductRepositoryLink.product_id == product_id,
+        ProductRepositoryLink.repository_id == repository_id))
+    await db.commit()
+    return None
+
+
+@router.post("/projects/{project_id}/repositories", status_code=201)
+async def link_project_repository(project_id: str, body: RepositoryLinkRequest,
+                                  db: AsyncSession = Depends(get_session)):
+    from .a2a_models import ProjectRecord
+    from .slop_metrics import ProjectRepositoryLink, RepositoryRecord
+
+    if await db.get(ProjectRecord, project_id) is None:
+        raise HTTPException(404, "unknown project")
+    if await db.get(RepositoryRecord, body.repository_id) is None:
+        raise HTTPException(404, "unknown repository")
+    exists = (await db.scalars(
+        select(ProjectRepositoryLink)
+        .where(ProjectRepositoryLink.project_id == project_id,
+               ProjectRepositoryLink.repository_id == body.repository_id))).first()
+    if exists is None:
+        db.add(ProjectRepositoryLink(project_id=project_id, repository_id=body.repository_id))
+        await db.commit()
+    return {"linked": True}
+
+
+@router.get("/products/{product_id}/slop", response_model=dict)
+async def product_slop(product_id: str, db: AsyncSession = Depends(get_session)):
+    from .slop_metrics import product_slop_summary
+
+    out = await product_slop_summary(db, product_id)
+    if not out:
+        raise HTTPException(404, "unknown product")
+    return out
+
+
+@router.get("/products/{product_id}/slop-history", response_model=list[dict])
+async def product_slop_history_route(product_id: str, db: AsyncSession = Depends(get_session)):
+    from .slop_metrics import product_slop_history
+
+    return await product_slop_history(db, product_id)
+
+
 # ---------------------------------------------------------------- model policy
 
 
