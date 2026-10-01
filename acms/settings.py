@@ -98,6 +98,16 @@ class Settings(BaseSettings):
     callback_watch_poll_seconds: int = 30
     callback_watch_max_seconds: int = 7200
 
+    # ---- ADR-0015 model policy / failover (STEA-004 plan §17-§20) -----------
+    # First-token deadline for a dispatched run: when no run-status transition
+    # arrives within this window, MODEL_LOCAL_FAILOVER fires (cancel + retry
+    # next local, cloud only if policy allows).
+    model_ttft_timeout_seconds: int = 600
+    # Cloud fallback spend ceiling (USD per work item) when policy allows cloud.
+    cloud_fallback_max_usd: float = 2.00
+    # Live run-event pump (ADR-0014): false in unit tests (SQLite lock cascades).
+    run_event_pump_enabled: bool = True
+
 
 @lru_cache
 def get_settings() -> Settings:

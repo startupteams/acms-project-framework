@@ -1,10 +1,12 @@
 {% extends "base.html" %}
 {% block title %}Products — ACMS{% endblock %}
 {% block content %}
-<h1>Products & Projects</h1>
+<h1>Products &amp; Projects</h1>
+<p class="muted"><strong>Product</strong> = business/customer offering &middot; <strong>Project</strong> = implementation area where Work Items live.</p>
 {% if user.role == 'administrator' %}
 <section class="panel">
-  <a class="button" href="/ui/products/new">+ New Product / Idea</a>
+  <a class="button" href="/ui/products/new">+ Create Product / Idea</a>
+  <a class="button" href="/ui/projects/new">+ Create Project</a>
 </section>
 {% endif %}
 {% if request.query_params.get('bootstrap_request') %}

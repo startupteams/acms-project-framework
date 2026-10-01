@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+
+{% block title %}Inbox item{% endblock %}
+
+{% block content %}
+<h1>{{ item.title }}</h1>
+<p class="muted">{{ item.item_class }} &middot; {{ item.severity }} &middot; created {{ item.created }} {% if item.read %}&middot; read{% else %}&middot; <strong>unread</strong>{% endif %} {% if item.archived %}&middot; archived{% endif %}</p>
+
+{% if request.query_params.get('archive_warn') %}
+<section class="panel warn"><strong>Archive refused:</strong> this is an unread ACTION_REQUIRED item. Tick force to archive anyway.</section>
+{% endif %}
+
+<section class="panel">
+  <h2>Summary</h2>
+  <p>{{ item.summary or '&mdash;' }}</p>
+  {% if work %}
+  <p>Work: <strong>{{ work.work_key }}</strong> {{ work.title }} ({{ work.status }})</p>
+  {% endif %}
+  {% if item.jira_issue_key %}<p>Jira: <code>{{ item.jira_issue_key }}</code></p>{% endif %}
+</section>
+
+<section class="panel">
+  <h2>Actions</h2>
+  <div class="button-row">
+    <form method="post" action="/ui/inbox/{{ item.item_id }}/read">
+      <input type="hidden" name="read" value="{{ '0' if item.read else '1' }}">
+      <button type="submit">{{ 'Mark unread' if item.read else 'Mark read' }}</button>
+    </form>
+    <form method="post" action="/ui/inbox/{{ item.item_id }}/context-markdown">
+      <button type="submit">Generate Context Markdown</button>
+    </form>
+    <form method="post" action="/ui/inbox/{{ item.item_id }}/action" onsubmit="return confirm('Archive this item?');">
+      <input type="hidden" name="action" value="archive">
+      <label><input type="checkbox" name="force" value="1"> force</label>
+      <button type="submit">Archive</button>
+    </form>
+  </div>
+</section>
+
+<section class="panel">
+  <h2>Reply</h2>
+  <form method="post" action="/ui/inbox/{{ item.item_id }}/action">
+    <input type="hidden" name="action" value="">
+    <textarea name="message" rows="4" placeholder="Reply, steering message, or planning input..." style="width:100%"></textarea>
+    <div class="button-row">
+      <button type="submit" name="action" value="steer" {% if not item.agent_id %}disabled title="no agent bound"{% endif %}>Steer active process</button>
+      <button type="submit" name="action" value="incorporate" {% if not item.work_item_id %}disabled title="no work item"{% endif %}>Incorporate into planning</button>
+      <button type="submit" name="action" value="reply">Reply only</button>
+    </div>
+  </form>
+</section>
+
+<section class="panel">
+  <h2>Linked context</h2>
+  <table>
+    <tbody>
+      <tr><th>Agent</th><td>{{ item.agent_id or '&mdash;' }}</td></tr>
+      <tr><th>Work item</th><td>{{ item.work_item_id or '&mdash;' }}</td></tr>
+      <tr><th>Execution session</th><td>{{ item.execution_session_id or '&mdash;' }}</td></tr>
+    </tbody>
+  </table>
+</section>
+
+{% if item.metadata %}
+<section class="panel">
+  <h2>Event trail</h2>
+  <pre>{{ item.metadata | tojson(indent=1) }}</pre>
+</section>
+{% endif %}
+{% endblock %}

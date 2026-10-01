@@ -458,6 +458,19 @@ async def _apply_pause(db: AsyncSession, work: WorkItemRecord, link: JiraIssueLi
                             + ("; runtime acknowledged" if acknowledged else "; runtime NOT yet acknowledged"),
                     metadata={"issue_key": link.jira_issue_key, "run_id": run.run_id,
                               "acknowledged": acknowledged, "hold_kind": hold_kind})
+    # Human Inbox (STEA-004 plan §6/§23): BLOCKED/DEFERRED may need a human
+    # decision (unblock or defer further). Correlation dedupes repeat polls.
+    from .inbox_service import create_inbox_item
+
+    await create_inbox_item(
+        db, title=f"Work paused: {work.work_key or work.work_item_id[:8]}",
+        summary=f"Jira says {reason.split('→')[-1].strip() or 'paused'}. Work paused. Decide: unblock or keep deferred.",
+        item_class="ACTION_REQUIRED", severity="medium",
+        agent_id=None, work_item_id=work.work_item_id,
+        jira_issue_key=link.jira_issue_key,
+        correlation_id=f"jira-pause:{link.jira_issue_key}",
+        metadata={"reason": reason[:300], "hold_kind": hold_kind,
+                  "runtime_acknowledged": acknowledged})
     await db.commit()
 
 

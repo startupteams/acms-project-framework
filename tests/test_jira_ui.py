@@ -130,7 +130,9 @@ def test_products_nav_and_new_form(gate_env, monkeypatch):
     cookies = _login_admin(monkeypatch)
     page = client.get("/ui/products", cookies=cookies)
     assert page.status_code == 200
-    assert "+ New Product / Idea" in page.text
+    # STEA-004 §11: clearer buttons — "+ Create Product / Idea" + "+ Create Project"
+    assert "+ Create Product / Idea" in page.text
+    assert "+ Create Project" in page.text
     newp = client.get("/ui/products/new", cookies=cookies)
     assert newp.status_code == 200
     assert "Review idea" in newp.text

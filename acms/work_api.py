@@ -37,6 +37,7 @@ def _item_response(record) -> WorkItemResponse:
         kind=record.kind,
         title=record.title,
         created_by=record.created_by,
+        project_id=getattr(record, "project_id", None),
         status=record.status,
         scope_markdown=record.scope_markdown,
         created_at=record.created_at,
@@ -65,6 +66,9 @@ def _task_response(record) -> ExecutionTaskResponse:
         status=record.status,
         started_at=record.started_at,
         finished_at=record.finished_at,
+        transport_state=getattr(record, "transport_state", None),
+        effective_model=getattr(record, "effective_model", None),
+        model_resolution_reason=getattr(record, "model_resolution_reason", None),
     )
 
 

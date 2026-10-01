@@ -246,3 +246,37 @@ def commits_json(shas: list[str]) -> str:
 
 def commits_list(raw: str | None) -> list[str]:
     return json.loads(raw) if raw else []
+
+
+async def record_execution_usage(db: AsyncSession, *, task, session_id: str | None,
+                                 usage: dict, completed_at) -> dict | None:
+    """Record run usage for cost attribution (STEA-004 plan §26).
+
+    Uses the execution task's usage_reference (worker-reported input/output
+    tokens). Cloud cost stays null until LiteLLM SpendLogs attribution runs —
+    tokens are real, cost is honest-null (never $0.00 fabrication). No outcome
+    link yet → the entry is stored with a synthetic outcome_id derived from the
+    task so it survives until the §26 pipeline links it to pr_outcomes.
+    """
+    if not usage and session_id is None:
+        return None
+    from .economics_models import CostAttributionRecord
+
+    entry = CostAttributionRecord(
+        entry_id=CostAttributionRecord.new_id(),
+        outcome_id=f"task:{task.task_id}",
+        session_id=session_id,
+        model_id=task.effective_model,
+        provider="local" if task.effective_model else None,
+        input_tokens=usage.get("input_tokens"),
+        output_tokens=usage.get("output_tokens"),
+        cached_input_tokens=usage.get("cached_input_tokens"),
+        api_cost_usd=None,  # honest null: attribution via SpendLogs is §26
+        source="session",
+        failed_run=task.status == "FAILED",
+        created_at=completed_at,
+    )
+    db.add(entry)
+    await db.commit()
+    await db.refresh(entry)
+    return {"entry_id": entry.entry_id}

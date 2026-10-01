@@ -75,6 +75,7 @@ def test_migration_chain_matches_orm_models(pg_url):
         import acms.economics_models  # noqa: F401
         import acms.jira_models  # noqa: F401  (jira kickoff/reconciliation, window-5)
         import acms.bootstrap_models  # noqa: F401  (product bootstrap, window-5)
+        import acms.a2a_models  # noqa: F401  (A2A production path, 2026-10-01)
         import acms.models  # noqa: F401  (agent registry)
 
         eng = sa_async.create_async_engine(pg_url.replace("postgresql://", "postgresql+asyncpg://"))

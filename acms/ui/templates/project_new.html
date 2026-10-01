@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+
+{% block title %}Create Project{% endblock %}
+
+{% block content %}
+<h1>Create Project</h1>
+<p class="muted">Project = implementation/context area where Work Items live. A Project may belong to one Product.</p>
+
+{% if error %}
+<section class="notice warn"><p>{{ error }}</p></section>
+{% endif %}
+
+<section class="panel">
+  <form method="post" action="/ui/projects/create">
+    <p><label>Name<br><input type="text" name="name" required maxlength="255" style="width:100%"></label></p>
+    <p><label>Product (optional)<br>
+      <select name="product_id" style="width:100%">
+        <option value="">— none (infrastructure project) —</option>
+        {% for p in products %}<option value="{{ p.product_id }}">{{ p.name }}</option>{% endfor %}
+      </select></label></p>
+    <p><label>Repo(s)<br><input type="text" name="repos" placeholder="org/repo, org/repo2" style="width:100%"></label></p>
+    <p><label>Jira project key (optional)<br><input type="text" name="jira_project_key" maxlength="32" placeholder="STNA" style="width:100%"></label></p>
+    <p><label>Context notes<br><textarea name="context_notes" rows="3" style="width:100%"></textarea></label></p>
+    <button type="submit">Create Project</button>
+  </form>
+</section>
+{% endblock %}

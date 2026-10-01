@@ -146,9 +146,16 @@ class HermesBridge:
     # ---------------------------------------------------------------- controls
 
     def send_work(self, *, work_key: str, assignment_key: str, instruction: str,
-                  session_id: str | None = None) -> dict:
+                  session_id: str | None = None, model: str | None = None) -> dict:
         """Dispatch work. Uses run submission (new session) or session-bound
-        chat (existing session); includes ACMS keys in metadata per REQ-052."""
+        chat (existing session); includes ACMS keys in metadata per REQ-052.
+
+        ``model`` (ADR-0015): the ACMS-resolved effective model. For new runs
+        it rides the /v1/runs ``model`` field — the worker honors it when it
+        has a matching model_routes entry (worker config owns that mapping).
+        Session-bound chat cannot change the model (Hermes session override
+        rules); the request is still accepted — the policy travels in the
+        envelope for operator visibility."""
         meta = {"acms_work_key": work_key, "acms_assignment_key": assignment_key,
                 "source": "acms"}
         if session_id:
@@ -156,11 +163,14 @@ class HermesBridge:
                               self._t.api_key,
                               {"message": instruction},
                               headers={"X-Hermes-Session-Id": session_id})
-        return _post_json(f"{self._t.base_url}/v1/runs", self._t.api_key, {
+        body: dict = {
             "input": [{"role": "user", "content": instruction}],
             "metadata": meta,
             "title": f"[{work_key}] ACMS dispatched work",
-        })
+        }
+        if model:
+            body["model"] = model
+        return _post_json(f"{self._t.base_url}/v1/runs", self._t.api_key, body)
 
     def steer(self, session_id: str, message: str) -> dict:
         return _post_json(f"{self._t.base_url}/api/sessions/{session_id}/chat",

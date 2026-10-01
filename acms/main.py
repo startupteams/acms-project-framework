@@ -80,6 +80,10 @@ from .bootstrap_api import router as bootstrap_router  # noqa: E402
 
 app.include_router(bootstrap_router)
 
+from .a2a_api import router as a2a_router  # noqa: E402
+
+app.include_router(a2a_router)
+
 
 @app.get("/health")
 async def health() -> dict[str, str]:

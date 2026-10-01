@@ -11,6 +11,7 @@ if TEST_DB.exists():
     TEST_DB.unlink()
 os.environ["ACMS_ADMIN_TOKEN"] = "test-token"
 os.environ["ACMS_DATABASE_URL"] = f"sqlite:///{TEST_DB}"
+os.environ["ACMS_RUN_EVENT_PUMP_ENABLED"] = "false"  # pump polls SQLite cross-loop → locks in tests
 
 from acms.db import Base, engine  # noqa: E402
 from acms import models  # noqa: E402,F401  (register tables on Base.metadata)
@@ -22,6 +23,7 @@ from acms import memory_models  # noqa: E402,F401  (register memory/session offl
 from acms import economics_models  # noqa: E402,F401  (register engineering-economics tables on Base.metadata)
 from acms import jira_models  # noqa: E402,F401  (register jira reconciliation tables on Base.metadata)
 from acms import bootstrap_models  # noqa: E402,F401  (register bootstrap_requests on Base.metadata)
+from acms import a2a_models  # noqa: E402,F401  (register A2A production-path tables on Base.metadata)
 
 
 @pytest.fixture(autouse=True)

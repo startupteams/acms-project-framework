@@ -89,6 +89,105 @@ class TelemetryScheduler:
                 await self._evaluate_agent(db, s, status, now_dt)
             await self._maybe_fleet_reconcile(db, s, now_dt)
             await self._reconcile_execution_results(db, s, now_dt)
+        # heartbeat poller (ADR-0014): every heartbeat_interval, poll bridge
+        # /health/detailed + top session for every registered agent with a
+        # bridge, and ingest as CONTACT_SOURCE_RECONCILIATION heartbeats. This
+        # makes homepage status/last-contact real without a worker-side pusher.
+        await self._poll_agent_heartbeats(s, now_dt)
+
+    # ------------------------------------------------------- heartbeat poller
+
+    async def _poll_agent_heartbeats(self, s, now_dt: datetime) -> None:
+        """Poll-based heartbeat ingestion (plan §16)."""
+        interval = max(15, int(getattr(s, "heartbeat_interval_seconds", 60)))
+        last = getattr(self, "_last_heartbeat_poll", None)
+        if last is not None and (now_dt - last).total_seconds() < interval:
+            return
+        self._last_heartbeat_poll = now_dt
+        try:
+            from .models import AgentRecord
+        except ImportError:
+            return
+
+        async with self._session_factory() as db:
+            agents = (await db.scalars(select(AgentRecord))).all()
+            for agent in agents:
+                if agent.trust_class != "internal":
+                    continue
+                try:
+                    payload = await self._fetch_worker_status(str(agent.agent_id))
+                except Exception:  # noqa: BLE001 — unreachable: honest absence
+                    continue
+                if payload is None:
+                    continue
+                try:
+                    await TelemetryService.ingest_heartbeat(db, str(agent.agent_id), payload)
+                    await db.commit()
+                except Exception:  # noqa: BLE001
+                    await db.rollback()
+
+    async def _fetch_worker_status(self, agent_id: str):
+        """Build an acms-heartbeat-v1 snapshot from the worker's Hermes api-server.
+        Returns None when the bridge cannot be reached (honest absence)."""
+        import urllib.request
+
+        from .bridge import HermesBridge, get_bridge_for_agent
+        from .telemetry_models import (
+            HeartbeatIdentity,
+            HeartbeatModel,
+            HeartbeatPayload,
+            HeartbeatSession,
+            HeartbeatUsage,
+        )
+
+        try:
+            bridge = get_bridge_for_agent(agent_id)
+        except Exception:  # noqa: BLE001
+            return None
+        if not isinstance(bridge, HermesBridge) or not getattr(bridge, "_t", None):
+            return None
+
+        import json
+
+        def _get(path: str, timeout: int = 8):
+            req = urllib.request.Request(f"{bridge._t.base_url}{path}")
+            req.add_header("Authorization", f"Bearer {bridge._t.api_key}")
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return json.loads(resp.read().decode())
+
+        try:
+            health = _get("/health/detailed")
+        except Exception:  # noqa: BLE001
+            return None
+        session = None
+        model_id = None
+        usage = None
+        try:
+            rows = (_get("/api/sessions").get("data") or [])
+            rows.sort(key=lambda x: x.get("last_active") or 0, reverse=True)
+            if rows:
+                top = rows[0]
+                session = HeartbeatSession(
+                    session_id=str(top.get("id") or ""),
+                    title=top.get("title"),
+                    agent_running=(health.get("active_agents") or 0) > 0 or None,
+                )
+                model_id = top.get("model")
+                usage = HeartbeatUsage(
+                    session_total_tokens=top.get("input_tokens", 0) + top.get("output_tokens", 0) or None,
+                )
+        except Exception:  # noqa: BLE001 — health already proven contact
+            pass
+        version = health.get("version")
+        return HeartbeatPayload(
+            identity=HeartbeatIdentity(
+                acms_agent_id=agent_id, bridge_id="hermes-api-server",
+                bridge_version=version, harness="hermes", harness_version=version),
+            observed_at=self._now_fn(),
+            session=session or HeartbeatSession(agent_running=None),
+            model=HeartbeatModel(model_id=model_id) if model_id else None,
+            usage=usage or HeartbeatUsage(),
+        )
 
     # ------------------------------------------------------- per-agent logic
 

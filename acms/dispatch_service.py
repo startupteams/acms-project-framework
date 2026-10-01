@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy import select
@@ -33,6 +34,9 @@ from .bridge import BridgeError, get_bridge_for_agent
 from .telemetry_models import AgentEventRecord
 from .telemetry_service import add_event
 from .work_models import ExecutionTaskCreate, ExecutionTaskRecord, WorkItemRecord
+
+
+ASSIGNMENT_SCHEMA_VERSION = "acms-a2a-assignment-v1"
 
 
 class DispatchError(Exception):
@@ -50,6 +54,68 @@ def _idempotency_key(work_item_id: str, assignment_id: str | None,
     """Stable dedupe key. Client key wins; else the open assignment; else work."""
     basis = client_key or assignment_id or work_item_id
     return hashlib.sha256(f"acms-dispatch:{basis}".encode()).hexdigest()[:32]
+
+
+async def _check_worker_busy(db: AsyncSession, agent_id: str, work_item_id: str) -> dict | None:
+    """One task per worker (plan §3; ADR-0013): refuse a NEW dispatch when the
+    target agent already has a non-terminal execution task for a DIFFERENT
+    work item. Returns the blocking detail or None."""
+    rows = (await db.scalars(
+        select(ExecutionTaskRecord)
+        .where(ExecutionTaskRecord.agent_id == agent_id,
+               ExecutionTaskRecord.status == "RUNNING")
+        .order_by(ExecutionTaskRecord.started_at.desc())
+        .limit(10)
+    )).all()
+    for t in rows:
+        if t.work_item_id != work_item_id:
+            return {
+                "blocking_work_item_id": t.work_item_id,
+                "blocking_task_id": t.task_id,
+                "blocking_since": t.started_at.isoformat() if t.started_at else None,
+            }
+    return None
+
+
+def _build_assignment_envelope(
+    *, work: WorkItemRecord, agent_id: str, task_id: str, assignment_id: str | None,
+    session_id: str | None, jira_issue_key: str | None, project: dict | None,
+    product: dict | None, sprint: dict | None, tags: list[str],
+    instruction: str, completion_condition: str | None,
+    output_artifacts_expected: list[str], model_policy: dict, priority: str,
+    callback_base: str, callback_token_hint: str, idempotency_key: str,
+) -> dict[str, Any]:
+    """acms-a2a-assignment-v1 envelope (ADR-0013; plan §12). project may never
+    be null; product/sprint may be."""
+    return {
+        "schema_version": ASSIGNMENT_SCHEMA_VERSION,
+        "assignment_id": assignment_id,
+        "idempotency_key": idempotency_key,
+        "agent_id": str(agent_id),
+        "work_item_id": work.work_item_id,
+        "execution_task_id": task_id,
+        "execution_session_id": session_id,
+        "work_key": work.work_key,
+        "jira_issue_key": jira_issue_key,
+        "project": project,
+        "product": product,
+        "sprint": sprint,
+        "tags": tags,
+        "instructions": instruction,
+        "completion_condition": completion_condition,
+        "output_artifacts_expected": output_artifacts_expected,
+        "model_policy": model_policy,
+        "priority": priority,
+        "callback_urls": {
+            "heartbeat": f"{callback_base}/api/v1/fleet/agents/{agent_id}/heartbeat" if callback_base else None,
+            "events": f"{callback_base}/api/v1/execution/{task_id}/stream" if callback_base else None,
+            "completion": f"{callback_base}/api/v1/callbacks/execution-completion" if callback_base else None,
+            "artifacts": f"{callback_base}/api/v1/artifacts" if callback_base else None,
+            "human_attention": f"{callback_base}/api/v1/inbox" if callback_base else None,
+        },
+        "callback_token_hint": callback_token_hint,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
 
 
 async def _find_existing_task(db: AsyncSession, dedupe_key: str) -> Any | None:
@@ -113,6 +179,26 @@ async def dispatch_work(db: AsyncSession, *, work_item_id: str,
                 "task_id": existing.task_id, "external_task_id": None,
                 "budget_check": None}
 
+    # ---- 2a. one-task-per-worker (plan §3; ADR-0013) ------------------------
+    busy = await _check_worker_busy(db, str(target_agent), work_item_id)
+    if busy is not None:
+        await add_event(
+            db,
+            event_type="EXECUTION_REJECTED",
+            actor_source="dispatch",
+            agent_id=target_agent,
+            work_key=work.work_key,
+            assignment_key=active.assignment_key if active else None,
+            summary=(f"409 WORKER_BUSY: {str(target_agent)[:8]} already executes "
+                     f"{busy['blocking_work_item_id'][:8]} — scheduler must pick "
+                     f"another idle worker")[:512],
+            metadata={"worker_busy": busy, "work_item_id": work_item_id,
+                      "dedupe_key": dedupe_key},
+        )
+        await db.commit()
+        return {"dispatched": False, "reason": "worker_busy", "worker_busy": busy,
+                "task_id": None, "external_task_id": None, "budget_check": None}
+
     # ---- 2b. JIRA KICKOFF GATE (window-5 §7/§13) BEFORE budget -------------
     # Server-enforced on EVERY dispatch path (UI, API, scheduler, retry,
     # resume, Executive decomposition, product bootstrap — all converge here).
@@ -171,39 +257,76 @@ async def dispatch_work(db: AsyncSession, *, work_item_id: str,
     if bridge is None:
         raise DispatchError("no-bridge-target", 503, {"agent_id": target_agent})
 
-    # ---- 4b. pre-create the execution task so the runtime can call back ----
-    # ADR-0012: the completion callback binds task_id + agent id, so the task
-    # row must exist BEFORE the run starts and its id must travel with the
-    # instruction. Failure to record the task aborts the dispatch (nothing
-    # was sent to the bridge — budget not consumed, no session created).
+    # ---- 4b. resolve model policy (ADR-0015) + pre-create the task -----------
+    # The completion callback binds task_id + agent id, so the task row must
+    # exist BEFORE the run starts and its id must travel with the instruction.
+    from .model_policy import resolve_policy_for_work_item
+    from .settings import get_settings
+
+    resolved_policy = await resolve_policy_for_work_item(db, work_item_id)
+    from datetime import datetime as _dt, timedelta as _td
+
+    ttft_deadline = _dt.now(timezone.utc) + _td(
+        seconds=get_settings().model_ttft_timeout_seconds)
+
     task, err = await work_service.create_execution_task(db, ExecutionTaskCreate(
         work_item_id=work_item_id,
         agent_id=target_agent,
         external_task_id=None,  # a2a run id back-filled after send_work
+        transport_state="DISPATCHING",
+        assignment_id=(active.assignment_id if active else None),
+        idempotency_key=dedupe_key,
+        model_policy_json=json.dumps(resolved_policy),
+        effective_model=resolved_policy.get("preferred_model"),
+        model_resolution_reason=resolved_policy.get("resolution_reason"),
+        ttft_deadline_at=ttft_deadline,
     ))
     if task is None:
         raise DispatchError(err or "task-record-failed", 500)
 
-    # ADR-0012 primary completion path: the instruction carries the callback
-    # contract so the runtime reports its terminal result itself. The
-    # reconcile sweep stays the fallback for lost/late callbacks.
-    from .settings import get_settings
-
     callback_base = get_settings().callback_base_url or ""
-    dispatch_instruction = instruction
-    if callback_base:
-        dispatch_instruction = (
-            f"{instruction}\n\n---\nCOMPLETION PROTOCOL (ACMS ADR-0012): when this task "
-            f"reaches a terminal state, POST to "
-            f"{callback_base}/api/v1/callbacks/execution-completion with header "
-            f"\"Authorization: Bearer <ACMS_CALLBACK_TOKEN>\" and JSON body "
-            f'{{"task_id": "{task.task_id}", "acms_agent_id": "{target_agent}", '
-            f'"status": "SUCCEEDED"|"FAILED"|"CANCELLED", "completed_at": "<UTC ISO>", '
-            f'"error_summary": "<one line when failed>"}}. '
-            f"Your agent id for acms_agent_id is {target_agent}. "
-            f"ACMS runtime infrastructure also observes completion and delivers "
-            f"the callback itself — this hint is a redundant optional path."
-        )
+    project_ctx: dict | None = None
+    if work.project_id:
+        from .a2a_models import ProjectRecord
+
+        proj = await db.get(ProjectRecord, work.project_id)
+        if proj is not None:
+            project_ctx = {"id": proj.project_id, "name": proj.name}
+    envelope = _build_assignment_envelope(
+        work=work,
+        agent_id=str(target_agent),
+        task_id=task.task_id,
+        assignment_id=(active.assignment_id if active else None),
+        session_id=None,  # session id is assigned after the run is accepted
+        jira_issue_key=work.jira_issue_key,
+        project=project_ctx,
+        product=None,   # product context rides the project; §12 allows null
+        sprint=None,
+        tags=[],
+        instruction=instruction,
+        completion_condition=None,
+        output_artifacts_expected=[],
+        model_policy=resolved_policy,
+        priority="normal",
+        callback_base=callback_base,
+        callback_token_hint="<ACMS_CALLBACK_TOKEN — never embedded; scoped token on the worker>",
+        idempotency_key=dedupe_key,
+    )
+
+    dispatch_instruction = (
+        f"{instruction}\n\n---\nACMS ASSIGNMENT ENVELOPE (machine-readable; "
+        f'schema {ASSIGNMENT_SCHEMA_VERSION}):\n'
+        f"{json.dumps(envelope, indent=1)}\n\n---\nCOMPLETION PROTOCOL (ACMS ADR-0012): when this task "
+        f"reaches a terminal state, POST to "
+        f"{callback_base}/api/v1/callbacks/execution-completion with header "
+        f"\"Authorization: Bearer <ACMS_CALLBACK_TOKEN>\" and JSON body "
+        f'{{"task_id": "{task.task_id}", "acms_agent_id": "{target_agent}", '
+        f'"status": "SUCCEEDED"|"FAILED"|"CANCELLED", "completed_at": "<UTC ISO>", '
+        f'"error_summary": "<one line when failed>"}}. '
+        f"Your agent id for acms_agent_id is {target_agent}. "
+        f"ACMS runtime infrastructure also observes completion and delivers "
+        f"the callback itself — this hint is a redundant optional path."
+    )
 
     # ---- 5. dispatch through the bridge (new A2A run) ----------------------
     session_for_run = None  # set on success; failure path closes it if set
@@ -213,10 +336,15 @@ async def dispatch_work(db: AsyncSession, *, work_item_id: str,
             assignment_key=(active.assignment_key if active else "") or "",
             instruction=dispatch_instruction,
             session_id=session_id,
+            model=task.effective_model,
         )
     except BridgeError as e:
         # dispatch itself failed — record it; budget NOT consumed (ACMS did not
-        # create a session), retry after the error is resolved.
+        # create a session), retry after the error is resolved. The task row
+        # rolls back to DISPATCHING-was-sent state: mark FAILED so the worker
+        # lock clears and the retry creates a fresh task.
+        task.status = "FAILED"
+        task.finished_at = datetime.now(timezone.utc)
         await add_event(
             db,
             event_type="EXECUTION_FAILED",
@@ -228,15 +356,28 @@ async def dispatch_work(db: AsyncSession, *, work_item_id: str,
             metadata={"dedupe_key": dedupe_key, "budget_check": verdict,
                       "work_item_id": work_item_id},
         )
+        from .inbox_service import create_inbox_item
+
+        await create_inbox_item(
+            db, title=f"Dispatch failed on {work.work_key or work_item_id[:8]}",
+            summary="Dispatch to worker failed. Retry when ready.",
+            item_class="ACTION_REQUIRED", severity="medium",
+            agent_id=str(target_agent), work_item_id=work_item_id,
+            jira_issue_key=work.jira_issue_key,
+            correlation_id=f"dispatch-failed:{dedupe_key}",
+            metadata={"bridge_error": str(e)[:300], "actor": actor},
+        )
         await fail_session_for_dispatch(db, session=session_for_run, reason=str(e))
         await db.commit()
         raise DispatchError("bridge-error", 502, {"detail": str(e)[:300]}) from None
 
     run_id = (result or {}).get("run_id") or (result or {}).get("id")
 
-    # back-fill the A2A run id on the pre-created task (ADR-0012 binding)
+    # ACK: the run id IS the worker's acceptance receipt (ADR-0013) — the
+    # Hermes api-server accepted the run and returned 202 with run_id.
     if run_id:
         task.external_task_id = str(run_id)
+        task.transport_state = "RUNNING"
 
     # Phase F (plan §8): the dispatch automatically owns an ExecutionSession.
     # Idempotent on the A2A run id — a duplicate dispatch never duplicates it.
@@ -277,8 +418,11 @@ async def dispatch_work(db: AsyncSession, *, work_item_id: str,
     # dispatch result (watch scheduling is fail-open, reconcile is fallback).
     if run_id:
         from .run_watcher import schedule_run_watch
+        from .run_event_pump import schedule_run_event_pump
 
         schedule_run_watch(task.task_id)
+        # live activity visibility (ADR-0014) — fail-open, never breaks dispatch
+        schedule_run_event_pump(task.task_id)
 
     return {"dispatched": True, "reason": verdict.get("reason", "dispatched"),
             "task_id": task.task_id, "external_task_id": str(run_id) if run_id else None,

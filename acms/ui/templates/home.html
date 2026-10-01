@@ -1,7 +1,10 @@
 {% extends "base.html" %}
+
 {% block title %}ACMS Home{% endblock %}
+
 {% block content %}
 <h1>Fleet overview</h1>
+
 <section class="cards">
   <div class="card">
     <h2>ACMS version</h2>
@@ -21,13 +24,70 @@
     <p class="big">{{ agent_count }}</p>
     <p class="muted">{{ internal_count }} internal &middot; {{ external_count }} external</p>
   </div>
+  <div class="card">
+    <h2>Running</h2>
+    <p class="big {% if running_tasks %}ok{% endif %}">{{ fleet_counts.get('RUNNING', 0) }}</p>
+    <p class="muted">{{ running_tasks }} execution task{{ '' if running_tasks == 1 else 's' }}</p>
+  </div>
+  <div class="card">
+    <h2>Idle</h2>
+    <p class="big">{{ fleet_counts.get('IDLE', 0) }}</p>
+    <p class="muted">{% if dispatching_tasks %}{{ dispatching_tasks }} dispatching{% else %}no dispatches in flight{% endif %}</p>
+  </div>
+  <div class="card">
+    <h2>Stale</h2>
+    <p class="big {% if fleet_counts.get('STALE') %}warn{% endif %}">{{ fleet_counts.get('STALE', 0) }}</p>
+    <p class="muted">&gt; 5 min without contact</p>
+  </div>
+  <div class="card">
+    <h2>Offline</h2>
+    <p class="big">{{ fleet_counts.get('OFFLINE', 0) }}</p>
+    <p class="muted">unreachable</p>
+  </div>
+  <div class="card">
+    <h2>Needs human</h2>
+    <p class="big {% if needs_human %}warn{% endif %}">{{ needs_human }}</p>
+    <p class="muted"><a href="/ui/inbox">open inbox</a></p>
+  </div>
+  <div class="card">
+    <h2>Artifacts</h2>
+    <p class="big">{{ artifact_count }}</p>
+    <p class="muted">stored handoffs</p>
+  </div>
 </section>
+
+<section class="panel">
+  <h2>Agents</h2>
+  {% if agent_cards %}
+  <table>
+    <thead>
+      <tr><th>Agent</th><th>Status</th><th>Last contact</th><th>Current session</th><th>Model</th><th>Context</th></tr>
+    </thead>
+    <tbody>
+      {% for c in agent_cards %}
+      <tr>
+        <td><a href="/ui/agents/{{ c.agent_id }}">{{ c.name }}</a></td>
+        <td><span class="badge">{{ c.state }}</span></td>
+        <td>{% if c.last_contact %}{{ c.last_contact.strftime('%m-%d %H:%M') }} UTC{% else %}&mdash;{% endif %}</td>
+        <td>{{ c.session_title or '&mdash;' }}</td>
+        <td>{{ c.model_id or '&mdash;' }}</td>
+        <td>{% if c.context_util is not none %}{{ c.context_util }}%{% else %}&mdash;{% endif %}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted">No agents registered yet.</p>
+  {% endif %}
+</section>
+
+{% if not_implemented %}
 <section class="panel">
   <h2>Not yet implemented</h2>
   <p>The backend does not yet maintain the following fleet fields, so they are not shown here:</p>
   <ul>
     {% for item in not_implemented %}<li>{{ item }}</li>{% endfor %}
   </ul>
-  <p class="muted">These arrive with Work Items, heartbeat/A2A control, and cost integration.</p>
 </section>
+{% endif %}
 {% endblock %}
