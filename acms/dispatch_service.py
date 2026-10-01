@@ -260,10 +260,10 @@ async def dispatch_work(db: AsyncSession, *, work_item_id: str,
     # ---- 4b. resolve model policy (ADR-0015) + pre-create the task -----------
     # The completion callback binds task_id + agent id, so the task row must
     # exist BEFORE the run starts and its id must travel with the instruction.
-    from .model_policy import resolve_policy_for_work_item
+    from .model_policy import resolve_policy
     from .settings import get_settings
 
-    resolved_policy = await resolve_policy_for_work_item(db, work_item_id)
+    resolved_policy = await resolve_policy(db, work_item_id, str(target_agent))
     from datetime import datetime as _dt, timedelta as _td
 
     ttft_deadline = _dt.now(timezone.utc) + _td(

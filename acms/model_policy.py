@@ -62,6 +62,67 @@ def _apply_overrides(base: dict[str, Any], overrides: dict[str, Any] | None,
     return dict(merged, resolution_reason=reason)
 
 
+async def resolve_policy(db: AsyncSession, work_item_id: str | None,
+                         agent_id: str | None) -> dict[str, Any]:
+    """Full ADR-0015 precedence: work_item > agent > project > system.
+
+    ``resolve_policy_for_work_item`` remains the work-item-only chain (used by
+    the /model-policy/effective endpoint where no agent is bound yet); the
+    dispatcher calls THIS with the target agent so the agent layer actually
+    applies (hit live 2026-10-01: agent-scope rows were stored but never read
+    at dispatch — the agent preference silently never won).
+    """
+    # 1. work-item override
+    if work_item_id is not None:
+        rec = (await db.scalars(
+            select(ModelPolicyRecord).where(
+                ModelPolicyRecord.scope == "work_item",
+                ModelPolicyRecord.scope_id == work_item_id,
+            )
+        )).first()
+        if rec is not None:
+            return dict(_policy_dict(rec), resolution_reason="work_override")
+
+    work = await db.get(WorkItemRecord, work_item_id) if work_item_id else None
+
+    # 2. agent preference
+    if agent_id is not None:
+        rec = (await db.scalars(
+            select(ModelPolicyRecord).where(
+                ModelPolicyRecord.scope == "agent",
+                ModelPolicyRecord.scope_id == agent_id,
+            )
+        )).first()
+        if rec is not None:
+            return dict(_policy_dict(rec), resolution_reason="agent")
+
+    # 3/4. project + system chain (shared with the work-item resolver)
+    project_policy_json = None
+    if work is not None and work.project_id:
+        rec = (await db.scalars(
+            select(ModelPolicyRecord).where(
+                ModelPolicyRecord.scope == "project",
+                ModelPolicyRecord.scope_id == work.project_id,
+            )
+        )).first()
+        if rec is not None:
+            return dict(_policy_dict(rec), resolution_reason="project")
+        project = await db.get(ProjectRecord, work.project_id)
+        if project is not None:
+            project_policy_json = project.default_model_policy_json
+
+    rec = (await db.scalars(
+        select(ModelPolicyRecord).where(ModelPolicyRecord.scope == "system")
+    )).first()
+    if rec is None:
+        base = {"inference_policy": "local-preferred",
+                "preferred_model": "qwen3.8-flash-next",
+                "cloud_fallback": True, "scope": "system", "policy_id": None}
+    else:
+        base = _policy_dict(rec)
+    return _apply_overrides(base, _overrides_json(project_policy_json), "system")
+
+
 async def resolve_policy_for_work_item(db: AsyncSession, work_item_id: str) -> dict[str, Any]:
     """Resolve the effective model policy for a Work Item (ADR-0015)."""
     work = await db.get(WorkItemRecord, work_item_id)
