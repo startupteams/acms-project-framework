@@ -204,6 +204,16 @@ class ModelPolicyResponse(BaseModel):
     updated_at: datetime | None = None
 
 
+@router.get("/model-policy/effective/{work_item_id}")
+async def effective_policy(work_item_id: str, db: AsyncSession = Depends(get_session)):
+    from .model_policy import resolve_policy_for_work_item
+    from .work_models import WorkItemRecord
+
+    if await db.get(WorkItemRecord, work_item_id) is None:
+        raise HTTPException(404, "unknown work item")
+    return await resolve_policy_for_work_item(db, work_item_id)
+
+
 @router.get("/model-policy/{scope}/{scope_id}", response_model=ModelPolicyResponse)
 async def get_model_policy(scope: str, scope_id: str, db: AsyncSession = Depends(get_session)):
     from .model_policy import get_policy
@@ -236,16 +246,6 @@ async def put_model_policy(body: ModelPolicyUpsert, db: AsyncSession = Depends(g
                                preferred_model=rec.preferred_model,
                                cloud_fallback=rec.cloud_fallback,
                                updated_at=rec.updated_at)
-
-
-@router.get("/model-policy/effective/{work_item_id}")
-async def effective_policy(work_item_id: str, db: AsyncSession = Depends(get_session)):
-    from .model_policy import resolve_policy_for_work_item
-    from .work_models import WorkItemRecord
-
-    if await db.get(WorkItemRecord, work_item_id) is None:
-        raise HTTPException(404, "unknown work item")
-    return await resolve_policy_for_work_item(db, work_item_id)
 
 
 # ---------------------------------------------------------------- inbox
