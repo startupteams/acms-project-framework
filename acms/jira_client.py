@@ -220,11 +220,84 @@ class JiraClient:
 
     # ------------------------------------------------------------------ outbound
 
+    @staticmethod
+    def _markdown_to_adf(body_markdown: str) -> dict:
+        """Convert simple Markdown/plain text to Atlassian Document Format (ADF).
+
+        Jira REST v3 REJECTS plain-string bodies ('Comment body is not valid!')
+        — the body MUST be an ADF doc. This converter handles the subset ACMS
+        posts (headings, paragraphs, bullet lines, code, links kept as literal
+        text) — hit live 2026-10-01 when the STNA-87 correction note 400'd.
+        """
+        import re as _re
+
+        content: list[dict] = []
+        lines = (body_markdown or "").strip().splitlines()
+        i = 0
+        while i < len(lines):
+            line = lines[i]
+            stripped = line.strip()
+            if not stripped:
+                i += 1
+                continue
+            # fenced code block
+            if stripped.startswith("```"):
+                code_lines = []
+                i += 1
+                while i < len(lines) and not lines[i].strip().startswith("```"):
+                    code_lines.append(lines[i])
+                    i += 1
+                i += 1  # skip closing fence
+                content.append({
+                    "type": "codeBlock",
+                    "attrs": {"language": "text"},
+                    "content": [{"type": "text", "text": "\n".join(code_lines)}],
+                })
+                continue
+            # headings: # .. ####
+            m = _re.match(r"^(#{1,6})\s+(.*)$", stripped)
+            if m:
+                level = min(len(m.group(1)), 6)
+                content.append({
+                    "type": f"heading{level}" if level > 3 else {1: "heading1", 2: "heading2", 3: "heading3"}[level],
+                    "content": [{"type": "text", "text": m.group(2)}],
+                })
+                i += 1
+                continue
+            # bullet
+            if stripped.startswith("- ") or stripped.startswith("* "):
+                items = []
+                while i < len(lines) and (lines[i].strip().startswith("- ") or lines[i].strip().startswith("* ")):
+                    items.append({
+                        "type": "listItem",
+                        "content": [{"type": "paragraph", "content": [
+                            {"type": "text", "text": lines[i].strip()[2:].strip()}]}],
+                    })
+                    i += 1
+                content.append({"type": "bulletList", "content": items})
+                continue
+            # paragraph: accumulate until blank line
+            para_lines = [stripped]
+            i += 1
+            while i < len(lines) and lines[i].strip() and not lines[i].strip().startswith(("#", "- ", "* ", "```")):
+                para_lines.append(lines[i].strip())
+                i += 1
+            para_content: list[dict] = []
+            for j, pl in enumerate(para_lines):
+                if j:
+                    para_content.append({"type": "hardBreak"})
+                para_content.append({"type": "text", "text": pl})
+            content.append({"type": "paragraph", "content": para_content})
+        return {"type": "doc", "version": 1, "content": content or
+                [{"type": "paragraph", "content": [{"type": "text", "text": "(empty)"}]}]}
+
+
     def add_comment(self, issue_key: str, body_markdown: str) -> str:
         """Post a useful summary comment (status summaries, handoffs, links).
 
-        Plain text via wiki-markup-free storage; v1 posts verbatim bodies —
-        keep them human-useful and low-noise (plan §D5).
+        Body is converted to ADF (Jira REST v3 requires a document body — a raw
+        string 400s with 'Comment body is not valid!'); markdown structure
+        (headings/bullets/code) is preserved where mappable.
         """
         self._check_projects(issue_key)
         if self.is_mock:
@@ -232,7 +305,7 @@ class JiraClient:
             return f"mock-comment-{len(self.mock_calls)}"
         with httpx.Client(base_url=self.base_url, auth=self._auth(), timeout=20) as c:
             r = c.post(f"/rest/api/3/issue/{issue_key}/comment",
-                       json={"body": body_markdown})
+                       json={"body": JiraClient._markdown_to_adf(body_markdown)})
             r.raise_for_status()
             return r.json().get("id", "")
 
