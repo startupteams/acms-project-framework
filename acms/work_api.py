@@ -6,6 +6,7 @@ are also consumed by the UI via the service layer.
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .db import get_session
@@ -22,6 +23,7 @@ from .work_models import (
     RoutineResponse,
     RoutineUpsert,
     WorkItemCreate,
+    WorkItemRecord,
     WorkItemResponse,
     WorkItemUpdate,
 )
@@ -42,6 +44,8 @@ def _item_response(record) -> WorkItemResponse:
         scope_markdown=record.scope_markdown,
         created_at=record.created_at,
         updated_at=record.updated_at,
+        work_key=getattr(record, "work_key", None),
+        work_uid=getattr(record, "work_uid", None),
     )
 
 
@@ -136,10 +140,21 @@ async def api_create_work_item(
 
 @router.get("/items", response_model=list[WorkItemResponse])
 async def api_list_work_items(
+    q: str | None = None,
     db: AsyncSession = Depends(get_session),
     _: None = Depends(require_admin_token),
 ) -> list[WorkItemResponse]:
-    return [_item_response(r) for r in await work_service.list_work_items(db)]
+    rows = await work_service.list_work_items(db)
+    if q:
+        # Multi-key work search (plan §6/§27): UID, short key, UUID, title, Jira.
+        like = f"%{q.strip()}%"
+        rows = [
+            r for r in rows
+            if like.strip("%").lower() in " ".join(filter(None, [
+                r.work_uid, r.work_key, r.work_item_id, r.title, r.jira_issue_key,
+            ])).lower()
+        ]
+    return [_item_response(r) for r in rows]
 
 
 @router.get("/items/{work_item_id}", response_model=WorkItemResponse)
@@ -149,6 +164,14 @@ async def api_get_work_item(
     _: None = Depends(require_admin_token),
 ) -> WorkItemResponse:
     record = await work_service.get_work_item(db, work_item_id)
+    if record is None and work_item_id.startswith("ACMS-WORK-"):
+        # Accept full UID or short key as the path identifier (plan §6).
+        record = (await db.scalars(
+            select(WorkItemRecord)
+            .where((WorkItemRecord.work_uid == work_item_id)
+                   | (WorkItemRecord.work_key == work_item_id))
+            .limit(1)
+        )).first()
     if record is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="work item not found")
     return _item_response(record)

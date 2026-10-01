@@ -7,11 +7,12 @@
 <section class="panel">
   {% if items %}
   <table>
-    <thead><tr><th>Title</th><th>Type</th><th>Jira</th><th>Work</th><th>Size</th><th>Created</th></tr></thead>
+    <thead><tr><th>Artifact UID</th><th>Title</th><th>Type</th><th>Jira</th><th>Work</th><th>Size</th><th>Created</th></tr></thead>
     <tbody>
       {% for a in items %}
       <tr>
-        <td><a href="/ui/artifacts/{{ a.artifact_id }}">{{ a.title }}</a></td>
+        <td><a href="/ui/artifacts/{{ a.artifact_uid or a.artifact_id }}"><code>{{ a.artifact_uid or a.artifact_id[:8] }}</code></a></td>
+        <td><a href="/ui/artifacts/{{ a.artifact_uid or a.artifact_id }}">{{ a.title }}</a></td>
         <td>{{ a.artifact_type }}</td>
         <td>{{ a.jira_issue_key or '&mdash;' }}</td>
         <td>{% if a.work_item_id %}{{ a.work_item_id[:8] }}{% else %}&mdash;{% endif %}</td>

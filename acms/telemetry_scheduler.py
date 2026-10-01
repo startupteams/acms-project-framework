@@ -383,6 +383,16 @@ class TelemetryScheduler:
                 metadata={"task_id": task.task_id, "a2a_run_id": task.external_task_id,
                           "session_id": session_id, "source": "adr0012_reconciliation"},
             )
+            # Canonical handoff (STEA-004 §9) — same authority as the callback
+            # path; idempotent so a late callback after reconcile is a no-op.
+            try:
+                from .canonical_handoff import generate_canonical_handoff
+
+                await generate_canonical_handoff(
+                    db, task=task, status=mapped, completed_at=now_dt,
+                )
+            except Exception:  # noqa: BLE001 — never break reconciliation
+                pass
         if repaired:
             await db.commit()
 

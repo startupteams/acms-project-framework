@@ -16,7 +16,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .models import AgentRecord
-from .work_keys import allocate_work_key, allocate_assignment_key
+from .work_keys import allocate_assignment_key
+from .uid_keys import allocate_work_uid
 from .work_models import (
     AssignmentCreate,
     AssignmentRecord,
@@ -56,9 +57,12 @@ async def create_work_item(db: AsyncSession, payload: WorkItemCreate) -> WorkIte
         if project is None:
             raise ValueError(f"project {payload.project_id} does not exist")
     now = _now()
+    seq, work_uid = await allocate_work_uid(db, now)
     record = WorkItemRecord(
         work_item_id=_new_id(),
-        work_key=await allocate_work_key(db),
+        work_key=f"ACMS-WORK-{seq:06d}",
+        work_uid=work_uid,
+        work_sequence=seq,
         parent_id=payload.parent_id,
         kind=payload.kind.value,
         title=payload.title,

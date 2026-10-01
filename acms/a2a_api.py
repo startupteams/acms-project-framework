@@ -33,6 +33,7 @@ from .a2a_models import (
 )
 from .db import get_session
 from .security import require_admin_token
+from .uid_keys import allocate_artifact_uid
 
 router = APIRouter(dependencies=[Depends(require_admin_token)])
 
@@ -440,8 +441,10 @@ async def inbox_context_markdown(item_id: str, db: AsyncSession = Depends(get_se
         parts += ["", "## Event trail", "```json", json.dumps(meta, indent=1, default=str)[:3000], "```"]
     parts += ["", "## Decision points", "- (human completes this section)"]
     content = "\n".join(parts)
+    _seq, _uid = await allocate_artifact_uid(db, _now())
     art = ArtifactRecord(
         artifact_id=ArtifactRecord.new_id(),
+        artifact_uid=_uid, artifact_sequence=_seq,
         work_item_id=rec.work_item_id, agent_id=rec.agent_id,
         project_id=rec.project_id, product_id=rec.product_id,
         jira_issue_key=rec.jira_issue_key, artifact_type="context",
@@ -473,6 +476,7 @@ class ArtifactCreate(BaseModel):
 
 class ArtifactResponse(BaseModel):
     artifact_id: str
+    artifact_uid: str | None = None
     work_item_id: str | None
     agent_id: str | None
     project_id: str | None
@@ -489,7 +493,8 @@ class ArtifactResponse(BaseModel):
 
 
 def _artifact_resp(r: ArtifactRecord) -> ArtifactResponse:
-    return ArtifactResponse(artifact_id=r.artifact_id, work_item_id=r.work_item_id,
+    return ArtifactResponse(artifact_id=r.artifact_id, artifact_uid=r.artifact_uid,
+                            work_item_id=r.work_item_id,
                             agent_id=r.agent_id, project_id=r.project_id,
                             product_id=r.product_id, jira_issue_key=r.jira_issue_key,
                             artifact_type=r.artifact_type, title=r.title, bluf=r.bluf,
@@ -504,8 +509,11 @@ async def create_artifact(body: ArtifactCreate, db: AsyncSession = Depends(get_s
 
     if body.work_item_id and await db.get(WorkItemRecord, body.work_item_id) is None:
         raise HTTPException(404, "unknown work item")
+    _seq, _uid = await allocate_artifact_uid(db, _now())
     rec = ArtifactRecord(
-        artifact_id=ArtifactRecord.new_id(), work_item_id=body.work_item_id,
+        artifact_id=ArtifactRecord.new_id(),
+        artifact_uid=_uid, artifact_sequence=_seq,
+        work_item_id=body.work_item_id,
         execution_session_id=body.execution_session_id, agent_id=body.agent_id,
         project_id=body.project_id, product_id=body.product_id,
         jira_issue_key=body.jira_issue_key, artifact_type=body.artifact_type,
@@ -520,17 +528,40 @@ async def create_artifact(body: ArtifactCreate, db: AsyncSession = Depends(get_s
 
 @router.get("/artifacts", response_model=list[ArtifactResponse])
 async def list_artifacts(work_item_id: str | None = None, limit: int = Query(default=50, le=200),
+                         q: str | None = None,
                          db: AsyncSession = Depends(get_session)):
     stmt = select(ArtifactRecord).order_by(ArtifactRecord.created_at.desc()).limit(limit)
     if work_item_id:
         stmt = stmt.where(ArtifactRecord.work_item_id == work_item_id)
+    if q:
+        # Multi-key search (plan §8): UID, UUID, short hash, sha256 full/prefix,
+        # title, Jira key, Work UID/short key. Structured LIKE match — semantic
+        # search is explicitly out of scope for Phase 1 (plan §27).
+        like = f"%{q.strip()}%"
+        stmt = stmt.where(
+            ArtifactRecord.artifact_uid.ilike(like)
+            | ArtifactRecord.artifact_id.ilike(like)
+            | ArtifactRecord.title.ilike(like)
+            | ArtifactRecord.jira_issue_key.ilike(like)
+            | ArtifactRecord.sha256.ilike(like)
+            | ArtifactRecord.work_item_id.ilike(like)
+        )
     rows = (await db.scalars(stmt)).all()
     return [_artifact_resp(r) for r in rows]
 
 
 @router.get("/artifacts/{artifact_id}", response_model=ArtifactResponse)
 async def get_artifact(artifact_id: str, db: AsyncSession = Depends(get_session)):
+    # Accept internal UUID, full UID, or sha256 prefix (plan §8 compatibility).
     rec = await db.get(ArtifactRecord, artifact_id)
+    if rec is None and artifact_id.startswith("ACMS-"):
+        rec = (await db.scalars(
+            select(ArtifactRecord).where(ArtifactRecord.artifact_uid == artifact_id).limit(1)
+        )).first()
+    if rec is None and len(artifact_id) >= 8:
+        rec = (await db.scalars(
+            select(ArtifactRecord).where(ArtifactRecord.sha256.startswith(artifact_id)).limit(1)
+        )).first()
     if rec is None:
         raise HTTPException(404, "unknown artifact")
     return _artifact_resp(rec)

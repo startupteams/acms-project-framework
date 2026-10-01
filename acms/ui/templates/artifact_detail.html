@@ -6,6 +6,13 @@
 <h1>{{ a.title }}</h1>
 <p class="muted">{{ a.artifact_type }} &middot; created {{ a.created }} by {{ a.created_by or 'unknown' }}</p>
 
+<section class="panel">
+  <h2>Identity</h2>
+  {% if a.artifact_uid %}<p><strong>Artifact UID:</strong> <code>{{ a.artifact_uid }}</code></p>{% endif %}
+  <p><strong>Internal UUID:</strong> <code>{{ a.artifact_id }}</code></p>
+  <p><code>sha256: {{ a.sha256 }}</code></p>
+</section>
+
 {% if a.bluf %}
 <section class="panel"><h2>BLUF</h2><p><strong>{{ a.bluf }}</strong></p></section>
 {% endif %}
@@ -17,9 +24,8 @@
 
 <section class="panel">
   <div class="button-row">
-    <a class="button" href="/ui/artifacts/{{ a.artifact_id }}/download">Download .md</a>
+    <a class="button" href="/ui/artifacts/{{ a.artifact_uid or a.artifact_id }}/download">Download .md</a>
     {% if a.jira_issue_key %}<code>Jira: {{ a.jira_issue_key }}</code>{% endif %}
-    <code>sha256: {{ a.sha256[:16] }}&hellip;</code>
   </div>
 </section>
 {% endblock %}
