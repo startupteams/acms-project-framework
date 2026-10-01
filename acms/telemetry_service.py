@@ -233,7 +233,16 @@ class TelemetryService:
                 )
             )
         ).first()
-        expected_work_key = active.work_key if active else None
+        # Work key lives on the WORK ITEM, not on the assignment row
+        # (work_assignments has no work_key column; hit live 2026-10-01 —
+        # ingest crashed with AttributeError for any agent holding an ACTIVE
+        # assignment, so the poller silently dropped that agent's heartbeats).
+        expected_work_key = None
+        if active is not None:
+            from .work_models import WorkItemRecord
+
+            work_item = await db.get(WorkItemRecord, active.work_item_id)
+            expected_work_key = work_item.work_key if work_item else None
         expected_assignment_key = active.assignment_key if active else None
 
         # session binding upsert
@@ -272,7 +281,7 @@ class TelemetryService:
         status.agent_running = _tri_state(payload.session.agent_running)
         status.session_id = payload.session.session_id
         status.session_title = payload.session.title
-        status.expected_work_key = (payload.assignment.acms_work_key or (active.work_key if active else None)) if active else None
+        status.expected_work_key = (payload.assignment.acms_work_key or expected_work_key) if active else None
         status.expected_assignment_key = (payload.assignment.acms_assignment_key or (active.assignment_key if active else None)) if active else None
 
         # alignment (plan §10): reported session title vs expected work key
@@ -335,7 +344,7 @@ class TelemetryService:
                 db,
                 event_type=etype,
                 actor_source="heartbeat", agent_id=agent_id,
-                work_key=active.work_key if active else None,
+                work_key=expected_work_key,
                 assignment_key=active.assignment_key if active else None,
                 harness_session_id=status.session_id, summary=summary,
             )
