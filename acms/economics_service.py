@@ -264,7 +264,12 @@ async def record_execution_usage(db: AsyncSession, *, task, session_id: str | No
 
     entry = CostAttributionRecord(
         entry_id=CostAttributionRecord.new_id(),
-        outcome_id=f"task:{task.task_id}",
+        # outcome_id is varchar(36) — "task:<uuid>" is 41 chars and overflows
+        # on PostgreSQL (hit live 2026-10-01: the overflow poisoned the
+        # callback session with PendingRollbackError and the completion
+        # callback 500-looped, leaving the task RUNNING). The synthetic
+        # outcome id IS the raw task id (exactly 36 chars).
+        outcome_id=task.task_id,
         session_id=session_id,
         model_id=task.effective_model,
         provider="local" if task.effective_model else None,
