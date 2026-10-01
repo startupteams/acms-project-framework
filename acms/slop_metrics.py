@@ -283,8 +283,8 @@ def measure_repository(owner: str, repo: str) -> dict:
     code_paths = [t["path"] for t in tree
                   if is_code_file(t["path"]) and not is_adr_file(t["path"])]
     adr_paths = [t["path"] for t in tree if is_adr_file(t["path"])]
-    if len(code_paths) > 60:
-        snap["error"] = (f"repository too large for v1 collector ({len(code_paths)} files > cap 60)")[:255]
+    if len(code_paths) > 400:
+        snap["error"] = (f"repository too large for v1 collector ({len(code_paths)} files > cap 400)")[:255]
         return snap
     loc = 0
     for p in code_paths:
