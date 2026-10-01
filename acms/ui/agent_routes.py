@@ -99,6 +99,8 @@ async def agent_detail(
         "agent": {
             "agent_id": agent.agent_id,
             "display_name": agent.display_name,
+            "legacy_name": agent.legacy_name,
+            "worker_uid": agent.worker_uid,
             "trust_class": agent.trust_class.value,
             "harness": agent.harness,
             "bridge_version": agent.bridge_version,
