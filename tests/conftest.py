@@ -25,6 +25,7 @@ from acms import jira_models  # noqa: E402,F401  (register jira reconciliation t
 from acms import bootstrap_models  # noqa: E402,F401  (register bootstrap_requests on Base.metadata)
 from acms import a2a_models  # noqa: E402,F401  (register A2A production-path tables on Base.metadata)
 from acms import slop_metrics  # noqa: E402,F401  (register repository/slop tables on Base.metadata)
+from acms import power_ingest  # noqa: E402,F401  (register power_cost_snapshot on Base.metadata)
 
 
 @pytest.fixture(autouse=True)

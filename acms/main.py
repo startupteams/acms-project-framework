@@ -84,6 +84,10 @@ from .a2a_api import router as a2a_router  # noqa: E402
 
 app.include_router(a2a_router)
 
+from .search_api import router as search_router  # noqa: E402
+
+app.include_router(search_router)
+
 
 @app.get("/health")
 async def health() -> dict[str, str]:
@@ -107,12 +111,41 @@ async def register(
     return agent
 
 
+async def _fleet_rows_filtered(db: AsyncSession, q: str | None, sort: str | None,
+                               harness: str | None) -> list:
+    """Fleet filter+sort core (§19) — route wrapper adds auth/session only."""
+    rows = await list_agents(db)
+    if harness:
+        rows = [a for a in rows if (a.harness or "") == harness]
+    if q:
+        ql = q.strip().lower()
+        rows = [a for a in rows if ql in " ".join(filter(None, [
+            a.display_name, getattr(a, "legacy_name", None),
+            getattr(a, "worker_uid", None), a.agent_id])).lower()]
+    key_map = {"display_name": lambda a: (a.display_name or "").lower(),
+               "worker_uid": lambda a: (getattr(a, "worker_uid", None) or ""),
+               "harness": lambda a: (a.harness or ""),
+               "created": lambda a: (a.created_at or a.agent_id)}
+    reverse = False
+    sort_key = sort or "display_name"
+    if sort_key.startswith("-"):
+        reverse = True
+        sort_key = sort_key[1:]
+    fn = key_map.get(sort_key, key_map["display_name"])
+    return sorted(rows, key=fn, reverse=reverse)
+
+
 @app.get("/api/v1/agents", response_model=list[AgentResponse])
 async def agents(
+    q: str | None = None,
+    sort: str | None = None,
+    harness: str | None = None,
     db: AsyncSession = Depends(get_session),
     _: None = Depends(require_admin_token),
 ) -> list[AgentResponse]:
-    return await list_agents(db)
+    """Fleet listing (§19): q= search (name/legacy/uid/uuid), sort= by
+    display_name|worker_uid|harness|created (prefix - for desc), harness= filter."""
+    return await _fleet_rows_filtered(db, q, sort, harness)
 
 
 @app.patch("/api/v1/agents/{agent_id}", response_model=AgentResponse)
