@@ -63,10 +63,21 @@ def upgrade() -> None:
     op.create_index("ix_projects_product", "projects", ["product_id"])
 
     if "project_id" not in wi_cols:
+        # SQLite batch mode: add the column plainly. The FK is enforced at the
+        # ORM level; recreating a table-local FK on SQLite requires the full
+        # copy-and-move with the constraint inside the table definition, which
+        # alembic batch derives from reflected schema (no inline FK support).
+        # PostgreSQL (prod) gets the real named FK constraint.
         with op.batch_alter_table("work_items") as batch:
-            batch.add_column(sa.Column("project_id", sa.String(length=36),
-                                       sa.ForeignKey("projects.project_id", ondelete="SET NULL"),
-                                       nullable=True))
+            batch.add_column(sa.Column("project_id", sa.String(length=36), nullable=True))
+        if op.get_bind().dialect.name != "sqlite":
+            op.create_foreign_key(
+                "fk_work_items_project", "work_items", "projects",
+                ["project_id"], ["project_id"], ondelete="SET NULL")
+    elif op.get_bind().dialect.name != "sqlite":
+        op.create_foreign_key(
+            "fk_work_items_project", "work_items", "projects",
+            ["project_id"], ["project_id"], ondelete="SET NULL")
     op.create_index("ix_work_items_project", "work_items", ["project_id"])
 
     # ---- tags ----------------------------------------------------------------
@@ -210,6 +221,12 @@ def downgrade() -> None:
     op.drop_index("ix_inbox_created", table_name="human_inbox_items")
     op.drop_table("human_inbox_items")
     op.drop_table("execution_events")
+    # the upgrade's column-level index=True created ix_execution_tasks_idempotency_key —
+    # SQLite batch recreates reflected indexes, so drop it BEFORE the batch drops
+    # the column.
+    et_ix = {i["name"] for i in sa.inspect(op.get_bind()).get_indexes("execution_tasks")}
+    if "ix_execution_tasks_idempotency_key" in et_ix:
+        op.drop_index("ix_execution_tasks_idempotency_key", table_name="execution_tasks")
     et_cols = {c["name"] for c in sa.inspect(op.get_bind()).get_columns("execution_tasks")}
     with op.batch_alter_table("execution_tasks") as batch:
         for name in ("transport_state", "assignment_id", "idempotency_key",
@@ -222,6 +239,13 @@ def downgrade() -> None:
     op.drop_table("tag_links")
     op.drop_table("tags")
     op.drop_index("ix_work_items_project", table_name="work_items")
+    # SQLite has no ALTER DROP CONSTRAINT — the batch column drop removes the
+    # table-local FK with it. PG needs the explicit named-constraint drop.
+    if op.get_bind().dialect.name != "sqlite":
+        fk_names = {fk["name"] for fk in sa.inspect(op.get_bind()).get_foreign_keys("work_items")
+                    if fk.get("name")}
+        if "fk_work_items_project" in fk_names:
+            op.drop_constraint("fk_work_items_project", "work_items", type_="foreignkey")
     wi_cols = {c["name"] for c in sa.inspect(op.get_bind()).get_columns("work_items")}
     if "project_id" in wi_cols:
         with op.batch_alter_table("work_items") as batch:
