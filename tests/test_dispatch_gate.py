@@ -79,9 +79,10 @@ class FakeBridge:
     def __init__(self):
         self.calls = []
 
-    def send_work(self, *, work_key, assignment_key, instruction, session_id=None):
+    def send_work(self, *, work_key, assignment_key, instruction, session_id=None, model=None):
         self.calls.append({"work_key": work_key, "assignment_key": assignment_key,
-                           "instruction": instruction, "session_id": session_id})
+                           "instruction": instruction, "session_id": session_id,
+                           "model": model})
         return {"run_id": f"run-{len(self.calls)}", "status": "queued"}
 
 

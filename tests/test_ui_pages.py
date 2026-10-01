@@ -166,11 +166,16 @@ def test_home_and_system_pages_show_real_data_only(monkeypatch, ui_env):
     resp = _login(monkeypatch, ADMIN_DN)
     home = client.get("/ui/", cookies=resp)
     assert home.status_code == 200
+    # STEA-004 §29: agent status / last contact are REAL now (heartbeat poller);
+    # only cost remains honestly unimplemented (usage pipeline is separate).
     assert "Not yet implemented" in home.text
-    # Slice 2 corrected the list: primary assignment now EXISTS (Work UI), so it
-    # must NOT be listed as not-implemented; agent status/last contact still are.
     assert "primary assignment" not in home.text
-    assert "agent status" in home.text
+    assert "agent status" not in home.text
+    assert "last contact" not in home.text
+    assert "cost" in home.text
+    # fleet cards render real values (never fabricated)
+    assert "Needs human" in home.text
+    assert "Agents" in home.text
 
     system = client.get("/ui/system", cookies=resp)
     assert system.status_code == 200

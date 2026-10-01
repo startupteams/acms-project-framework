@@ -47,6 +47,12 @@ class WorkItemRecord(Base):
     title: Mapped[str] = mapped_column(String(255))
     # Provenance of approved scope (ACMS-REQ-010/011): who created this item.
     created_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    # Project home (STEA-004 plan §9; ADR-0017). Nullable for legacy rows;
+    # new items should carry one (API layer enforces for new creation).
+    project_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("projects.project_id", ondelete="SET NULL"),
+        nullable=True, index=True,
+    )
     status: Mapped[str] = mapped_column(String(16), default=WorkItemStatus.PLANNED.value)
     # Human-readable Markdown scope/requirements (ACMS-REQ-011: approved scope is authoritative).
     scope_markdown: Mapped[str] = mapped_column(Text, default="")
@@ -118,6 +124,18 @@ class ExecutionTaskRecord(Base):
     status: Mapped[str] = mapped_column(String(16), default="RUNNING")
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # ---- A2A delivery contract (ADR-0013; STEA-004 plan §12) ----------------
+    # DISPATCHING = envelope sent, awaiting ACK; RUNNING = run id received.
+    # NULL for legacy rows (pre-contract dispatches) — treated as RUNNING.
+    transport_state: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    assignment_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    idempotency_key: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    # Model policy snapshot (ADR-0015): resolved policy + effective model.
+    model_policy_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    effective_model: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    model_resolution_reason: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    ttft_deadline_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    failover_attempt: Mapped[int] = mapped_column(default=0)
 
 
 class BackgroundRoutineRecord(Base):
@@ -164,12 +182,14 @@ class WorkItemCreate(BaseModel):
     title: str = Field(min_length=1, max_length=255)
     created_by: str | None = Field(default=None, max_length=128)
     scope_markdown: str = ""
+    project_id: str | None = Field(default=None, max_length=36)
 
 
 class WorkItemUpdate(BaseModel):
     status: WorkItemStatus | None = None
     title: str | None = Field(default=None, min_length=1, max_length=255)
     scope_markdown: str | None = None
+    project_id: str | None = Field(default=None, max_length=36)
 
 
 class WorkItemResponse(BaseModel):
@@ -178,6 +198,7 @@ class WorkItemResponse(BaseModel):
     kind: str
     title: str
     created_by: str | None
+    project_id: str | None = None
     status: str
     scope_markdown: str
     created_at: datetime
@@ -203,6 +224,14 @@ class ExecutionTaskCreate(BaseModel):
     work_item_id: str = Field(max_length=36)
     agent_id: str | None = Field(default=None, max_length=36)
     external_task_id: str | None = Field(default=None, max_length=128)
+    # A2A delivery contract (ADR-0013) + model policy snapshot (ADR-0015)
+    transport_state: str | None = Field(default=None, max_length=16)
+    assignment_id: str | None = Field(default=None, max_length=36)
+    idempotency_key: str | None = Field(default=None, max_length=64)
+    model_policy_json: str | None = None
+    effective_model: str | None = Field(default=None, max_length=128)
+    model_resolution_reason: str | None = Field(default=None, max_length=32)
+    ttft_deadline_at: datetime | None = None
 
 
 class ExecutionTaskResponse(BaseModel):
@@ -213,6 +242,9 @@ class ExecutionTaskResponse(BaseModel):
     status: str
     started_at: datetime
     finished_at: datetime | None
+    transport_state: str | None = None
+    effective_model: str | None = None
+    model_resolution_reason: str | None = None
 
 
 class RoutineUpsert(BaseModel):

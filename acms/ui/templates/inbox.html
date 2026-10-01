@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+
+{% block title %}Human Inbox{% endblock %}
+
+{% block content %}
+<h1>Inbox</h1>
+<p class="muted">ACTION REQUIRED needs a decision. FYI is informational. Reading does not mean solved.</p>
+
+<section class="cards">
+  <div class="card"><h2>Shown</h2><p class="big">{{ counts.shown }}</p></div>
+  <div class="card"><h2>Unread</h2><p class="big {% if counts.unread %}warn{% endif %}">{{ counts.unread }}</p></div>
+  <div class="card"><h2>Action required</h2><p class="big {% if counts.action %}warn{% endif %}">{{ counts.action }}</p></div>
+</section>
+
+<section class="panel">
+  <h2>Filters</h2>
+  <form method="get" action="/ui/inbox" class="filters">
+    <select name="item_class">
+      <option value="">All classes</option>
+      <option value="ACTION_REQUIRED" {% if item_class == 'ACTION_REQUIRED' %}selected{% endif %}>Action required</option>
+      <option value="FYI" {% if item_class == 'FYI' %}selected{% endif %}>FYI</option>
+      <option value="STALE" {% if item_class == 'STALE' %}selected{% endif %}>Stale</option>
+    </select>
+    <label><input type="checkbox" name="unread_only" value="true" {% if unread_only %}checked{% endif %}> unread only</label>
+    <label><input type="checkbox" name="include_archived" value="true" {% if include_archived %}checked{% endif %}> archived</label>
+    <input type="text" name="search" value="{{ search }}" placeholder="search...">
+    <button type="submit">Apply</button>
+  </form>
+</section>
+
+<section class="panel">
+  <h2>Items</h2>
+  {% if items %}
+  <table>
+    <thead><tr><th>Class</th><th>Severity</th><th>Title</th><th>Work</th><th>Jira</th><th>Created</th><th></th></tr></thead>
+    <tbody>
+      {% for i in items %}
+      <tr class="{% if not i.read %}unread{% endif %}">
+        <td>{{ i.item_class }}</td>
+        <td>{{ i.severity }}</td>
+        <td><a href="/ui/inbox/{{ i.item_id }}">{{ i.title }}</a>{% if not i.read %} <span class="badge">unread</span>{% endif %}</td>
+        <td>{% if i.work_item_id %}<a href="/ui/work">{{ i.work_item_id[:8] }}</a>{% else %}&mdash;{% endif %}</td>
+        <td>{{ i.jira_issue_key or '&mdash;' }}</td>
+        <td>{{ i.created }}</td>
+        <td>{% if i.archived %}archived{% endif %}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted">Inbox zero.</p>
+  {% endif %}
+</section>
+{% endblock %}

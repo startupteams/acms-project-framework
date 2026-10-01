@@ -62,12 +62,14 @@ def install_ui(app) -> None:
     from .attention_routes import router as attention_router
     from .jira_routes import router as jira_router
     from .product_routes import router as product_router
+    from .a2a_routes import router as a2a_ui_router
 
     app.include_router(work_router)
     app.include_router(agent_router)
     app.include_router(attention_router)
     app.include_router(jira_router)
     app.include_router(product_router)
+    app.include_router(a2a_ui_router)
 
 
 def _deny_unmapped(request: Request, username: str) -> Response:
@@ -199,15 +201,70 @@ async def ui_home(
     agents = await _load_agents(db)
     internal = sum(1 for a in agents if a["trust_class"] == "internal")
     external = sum(1 for a in agents if a["trust_class"] == "external")
+    # Real fleet status (ADR-0010 connectivity + execution states; STEA-004 §16/§29)
+    from sqlalchemy import func, select
+
+    from ..a2a_models import ArtifactRecord, HumanInboxItemRecord
+    from ..telemetry_models import AgentStatusCurrentRecord
+    from ..work_models import ExecutionTaskRecord
+
+    status_rows = {r.agent_id: r for r in (await db.scalars(select(AgentStatusCurrentRecord))).all()}
+    running_tasks = (await db.scalar(
+        select(func.count()).select_from(ExecutionTaskRecord)
+        .where(ExecutionTaskRecord.status == "RUNNING",
+               ExecutionTaskRecord.transport_state == "RUNNING"))) or 0
+    dispatching = (await db.scalar(
+        select(func.count()).select_from(ExecutionTaskRecord)
+        .where(ExecutionTaskRecord.status == "RUNNING",
+               ExecutionTaskRecord.transport_state == "DISPATCHING"))) or 0
+    needs_human = (await db.scalar(
+        select(func.count()).select_from(HumanInboxItemRecord)
+        .where(HumanInboxItemRecord.item_class == "ACTION_REQUIRED",
+               HumanInboxItemRecord.archived_at.is_(None),
+               HumanInboxItemRecord.read_at.is_(None)))) or 0
+    artifact_count = (await db.scalar(select(func.count()).select_from(ArtifactRecord))) or 0
+
+    def _fleet_state(a: dict) -> str:
+        s = status_rows.get(a["agent_id"])
+        if s is None:
+            return "IDLE" if a["trust_class"] == "internal" else "OFFLINE"
+        if s.connectivity == "STALE":
+            return "STALE"
+        if s.connectivity == "UNREACHABLE":
+            return "OFFLINE"
+        if s.agent_running == "true":
+            return "RUNNING"
+        return "IDLE"
+
+    fleet_counts: dict[str, int] = {}
+    for a in agents:
+        st = _fleet_state(a)
+        fleet_counts[st] = fleet_counts.get(st, 0) + 1
+    agent_cards = []
+    for a in agents:
+        s = status_rows.get(a["agent_id"])
+        agent_cards.append({
+            "agent_id": a["agent_id"],
+            "name": a["display_name"],
+            "state": _fleet_state(a),
+            "last_contact": s.last_contact_at if s else None,
+            "session_title": s.session_title if s else None,
+            "model_id": s.model_id if s else None,
+            "context_util": s.context_utilization_percent if s else None,
+        })
     context = _base_context(user) | {
         "app_health": "ok",
         "db_health": "ok" if await _database_ok() else "unreachable",
         "agent_count": len(agents),
         "internal_count": internal,
         "external_count": external,
-        # ACMS-REQ-046 partial: these backend fields do not exist yet — never fabricate.
-        # (Primary assignments exist since the Work UI slice; heartbeat/A2A/cost do not.)
-        "not_implemented": ["agent status", "last contact", "cost"],
+        "fleet_counts": fleet_counts,
+        "agent_cards": agent_cards,
+        "running_tasks": running_tasks,
+        "dispatching_tasks": dispatching,
+        "needs_human": needs_human,
+        "artifact_count": artifact_count,
+        "not_implemented": ["cost"],  # honest: usage pipeline (plan §26) ships separately
     }
     return templates.TemplateResponse(request, "home.html", context)
 
@@ -227,8 +284,13 @@ async def ui_agents(
 async def ui_system(
     request: Request,
     user=Depends(current_user),
+    db: AsyncSession = Depends(get_session),
 ):
     settings = get_settings()
+    # Model policy (STEA-004 §18): system-scope policy shown; Administrator edits via the API form below.
+    from ..model_policy import get_policy
+
+    sys_policy = await get_policy(db, "system", None)
     context = _base_context(user) | {
         "environment": settings.environment,
         "db_health": "ok" if await _database_ok() else "unreachable",
@@ -237,5 +299,10 @@ async def ui_system(
         "ldap_configured": bool(settings.ldap_url),
         "session_configured": session_configured(),
         "deployment_notes": DEPLOYMENT_NOTES,
+        "model_policy": {
+            "inference_policy": sys_policy.inference_policy if sys_policy else "local-preferred",
+            "preferred_model": sys_policy.preferred_model if sys_policy else "qwen3.8-flash-next",
+            "cloud_fallback": bool(sys_policy.cloud_fallback) if sys_policy else True,
+        },
     }
     return templates.TemplateResponse(request, "system.html", context)

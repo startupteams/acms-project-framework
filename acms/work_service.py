@@ -49,6 +49,12 @@ async def create_work_item(db: AsyncSession, payload: WorkItemCreate) -> WorkIte
         parent = await db.get(WorkItemRecord, payload.parent_id)
         if parent is None:
             raise ValueError(f"parent work item {payload.parent_id} does not exist")
+    if payload.project_id is not None:
+        from .a2a_models import ProjectRecord
+
+        project = await db.get(ProjectRecord, payload.project_id)
+        if project is None:
+            raise ValueError(f"project {payload.project_id} does not exist")
     now = _now()
     record = WorkItemRecord(
         work_item_id=_new_id(),
@@ -57,6 +63,7 @@ async def create_work_item(db: AsyncSession, payload: WorkItemCreate) -> WorkIte
         kind=payload.kind.value,
         title=payload.title,
         created_by=payload.created_by,
+        project_id=payload.project_id,
         status=WorkItemStatus.PLANNED.value,
         scope_markdown=payload.scope_markdown,
         created_at=now,
@@ -89,6 +96,13 @@ async def update_work_item(
         record.title = payload.title
     if payload.scope_markdown is not None:
         record.scope_markdown = payload.scope_markdown
+    if payload.project_id is not None:
+        from .a2a_models import ProjectRecord
+
+        project = await db.get(ProjectRecord, payload.project_id)
+        if project is None:
+            raise ValueError(f"project {payload.project_id} does not exist")
+        record.project_id = payload.project_id
     record.updated_at = _now()
     await db.commit()
     await db.refresh(record)
@@ -221,6 +235,13 @@ async def create_execution_task(
         agent_id=payload.agent_id,
         external_task_id=payload.external_task_id,
         status="RUNNING",
+        transport_state=payload.transport_state or "DISPATCHING",
+        assignment_id=payload.assignment_id,
+        idempotency_key=payload.idempotency_key,
+        model_policy_json=payload.model_policy_json,
+        effective_model=payload.effective_model,
+        model_resolution_reason=payload.model_resolution_reason,
+        ttft_deadline_at=payload.ttft_deadline_at,
         started_at=_now(),
         finished_at=None,
     )

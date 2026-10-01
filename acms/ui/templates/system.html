@@ -26,3 +26,14 @@
   <p class="muted">A Git SHA is the authoritative deployed code identity (feature-delivery plan §4).</p>
 </section>
 {% endblock %}
+<section class="panel">
+  <h2>Model policy (system default)</h2>
+  <p class="muted">Precedence: Work override &gt; Agent &gt; Project &gt; System. Effective values shown on each execution. Route truth lives in LLM Manager.</p>
+  <table>
+    <tbody>
+      <tr><th>Policy</th><td>{{ model_policy.inference_policy }}</td></tr>
+      <tr><th>Preferred model</th><td><code>{{ model_policy.preferred_model }}</code></td></tr>
+      <tr><th>Cloud fallback</th><td>{{ 'allowed' if model_policy.cloud_fallback else 'disallowed' }}</td></tr>
+    </tbody>
+  </table>
+</section>

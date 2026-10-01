@@ -32,6 +32,8 @@ class DispatchResponse(BaseModel):
     task_id: str | None = None
     external_task_id: str | None = None
     budget_check: dict | None = None
+    worker_busy: dict | None = None
+    jira_gate: dict | None = None
 
 
 @router.post("/work/{work_item_id}", response_model=DispatchResponse)

@@ -159,6 +159,28 @@ async def process_completion_callback(db: AsyncSession, payload: CompletionCallb
             "error_summary": payload.error_summary,
         },
     )
+    # ---- Inbox auto-conversion (STEA-004 plan §23) + usage capture (§26) ----
+    # When the execution resolves, unresolved ACTION_REQUIRED inbox items for
+    # this work item demote to STALE (action became irrelevant), and the run's
+    # token usage is recorded for cost attribution.
+    try:
+        from .inbox_service import demote_for_work_item
+
+        await demote_for_work_item(db, task.work_item_id,
+                                   to_class="STALE",
+                                   reason=f"execution {payload.status.lower()}")
+    except Exception:  # noqa: BLE001 — inbox hygiene never breaks completion
+        pass
+    try:
+        from .economics_service import record_execution_usage
+
+        await record_execution_usage(
+            db, task=task, session_id=session_id,
+            usage=payload.usage_reference or {}, completed_at=completed_at)
+    except ImportError:
+        pass  # economics usage capture ships with the §26 pipeline
+    except Exception:  # noqa: BLE001 — usage capture never breaks completion
+        pass
     await db.commit()
     return {"result": "closed", "task_id": task.task_id,
             "task_status": task.status, "session_id": session_id}

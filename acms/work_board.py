@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from .budget_service import get_budget
 from .economics_models import PrOutcomeRecord
-from .work_models import AssignmentRecord, WorkItemRecord
+from .work_models import AssignmentRecord, ExecutionTaskRecord, WorkItemRecord
 
 BOARD_COLUMNS = [
     ("planned", "Planned"),
@@ -41,6 +41,18 @@ async def board_data(db: AsyncSession) -> dict:
     active_worker: dict[str, str] = {}
     for a in assignments:
         active_worker.setdefault(a.work_item_id, a.agent_id[:8])
+
+    # Real execution state (STEA-004 §30): RUNNING only when a task exists with
+    # transport_state=RUNNING (worker ACKed the run). Assignment alone never
+    # means executing; DISPATCHING shows as "dispatching".
+    exec_state: dict[str, str] = {}
+    tasks = (await db.scalars(
+        select(ExecutionTaskRecord)
+        .where(ExecutionTaskRecord.status == "RUNNING")
+        .order_by(ExecutionTaskRecord.started_at.desc())
+    )).all()
+    for t in tasks:
+        exec_state.setdefault(t.work_item_id, t.transport_state or "RUNNING")
 
     # PR outcomes per work item (economics data — objective states only)
     pr_rows = (await db.scalars(
@@ -70,6 +82,7 @@ async def board_data(db: AsyncSession) -> dict:
             "title": it.title,
             "kind": it.kind,
             "worker": active_worker.get(wid),
+            "exec_state": exec_state.get(wid),
             "pr_count": len(prs),
             "pr_accepted": sum(1 for p in prs if p["state"] == "ACCEPTED"),
             "pr_merged": sum(1 for p in prs if p["state"] == "MERGED"),

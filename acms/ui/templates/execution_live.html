@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+
+{% block title %}Live execution{% endblock %}
+
+{% block content %}
+<h1>LIVE &mdash; {{ work.work_key if work else task.task_id[:8] }}</h1>
+<p class="muted">
+  {{ task.transport_state or 'RUNNING' }} &middot;
+  status {{ task.status }} &middot;
+  effective model <strong>{{ task.effective_model or 'not resolved' }}</strong>
+  {% if task.model_reason %}({{ task.model_reason }}){% endif %} &middot;
+  started {{ task.started }}
+</p>
+{% if work %}
+<p>Jira: <code>{{ work.jira_issue_key or 'none' }}</code> &middot; {{ work.title }}</p>
+{% endif %}
+
+<section class="panel">
+  <h2>Live Activity</h2>
+  <table id="live-events">
+    <thead><tr><th>#</th><th>Time</th><th>Event</th><th>Detail</th></tr></thead>
+    <tbody>
+      {% for e in events %}
+      <tr>
+        <td>{{ e.seq }}</td><td>{{ e.ts }}</td><td>{{ e.type }}</td>
+        <td>{% if e.tool %}<code>{{ e.tool }}</code> {% endif %}{{ e.preview[:300] }}</td>
+      </tr>
+      {% endfor %}
+      {% if not events %}
+      <tr><td colspan="4" class="muted">No events yet — streaming will populate this view.</td></tr>
+      {% endif %}
+    </tbody>
+  </table>
+  <p class="muted" id="stream-state">stream: connecting&hellip;</p>
+</section>
+
+<script>
+(function () {
+  var lastSeq = {{ last_seq }};
+  var stateEl = document.getElementById('stream-state');
+  var tbody = document.querySelector('#live-events tbody');
+  var live = "{{ 'true' if task.status == 'RUNNING' else 'false' }}" === "true";
+  if (!live) { stateEl.textContent = 'stream: task is terminal; showing stored events'; return; }
+  var url = "{{ sse_url }}?last_id=" + lastSeq;
+  var es = new EventSource(url);
+  es.onopen = function () { stateEl.textContent = 'stream: live'; };
+  es.onerror = function () { stateEl.textContent = 'stream: reconnecting…'; };
+  es.addEventListener('message', function () { /* typed events below */ });
+  ["run.started","run.completed","run.failed","run.cancelled",
+   "tool.started","tool.completed","tool.failed","message.delta","reasoning.available"
+  ].forEach(function (t) {
+    es.addEventListener(t, function (ev) {
+      try { var d = JSON.parse(ev.data); } catch (e) { return; }
+      if (d.seq !== undefined) { /* replayed rows carry no seq; ignore */ }
+      var tr = document.createElement('tr');
+      var ts = new Date().toISOString().substr(11, 8);
+      var detail = d.preview || d.delta || d.output || '';
+      tr.innerHTML = '<td>+</td><td>' + ts + '</td><td>' + ev.type + '</td><td>' +
+        (d.tool ? '<code>' + d.tool + '</code> ' : '') +
+        String(detail).replace(/[<>&]/g, '').slice(0, 300) + '</td>';
+      tbody.appendChild(tr);
+      if (ev.type.indexOf('run.') === 0) {
+        stateEl.textContent = 'stream: ' + ev.type + ' (reconnect to refresh page)';
+      }
+    });
+  });
+})();
+</script>
+{% endblock %}

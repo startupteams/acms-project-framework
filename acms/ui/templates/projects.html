@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+
+{% block title %}Projects{% endblock %}
+
+{% block content %}
+<h1>Projects</h1>
+<p class="muted">Project = implementation/context area where Work Items live. <a href="/ui/products">Products &rarr;</a></p>
+{% if user.role == 'administrator' %}
+<p><a class="button" href="/ui/projects/new">+ Create Project</a></p>
+{% endif %}
+<section class="panel">
+  {% if projects %}
+  <table>
+    <thead><tr><th>Name</th><th>Product</th><th>Repos</th><th>Jira key</th><th>Work items</th></tr></thead>
+    <tbody>
+      {% for p in projects %}
+      <tr>
+        <td><strong>{{ p.name }}</strong> <code class="muted">{{ p.slug }}</code></td>
+        <td>{{ p.product or '—' }}</td>
+        <td>{{ p.repos or '—' }}</td>
+        <td>{{ p.jira_project_key or '—' }}</td>
+        <td>{{ p.work_count }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted">No projects yet. Create one to give Work Items a home.</p>
+  {% endif %}
+</section>
+{% endblock %}

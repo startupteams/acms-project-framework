@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+
+{% block title %}{{ a.title }}{% endblock %}
+
+{% block content %}
+<h1>{{ a.title }}</h1>
+<p class="muted">{{ a.artifact_type }} &middot; created {{ a.created }} by {{ a.created_by or 'unknown' }}</p>
+
+{% if a.bluf %}
+<section class="panel"><h2>BLUF</h2><p><strong>{{ a.bluf }}</strong></p></section>
+{% endif %}
+
+<section class="panel">
+  <h2>Content</h2>
+  <pre style="white-space: pre-wrap;">{{ a.content }}</pre>
+</section>
+
+<section class="panel">
+  <div class="button-row">
+    <a class="button" href="/ui/artifacts/{{ a.artifact_id }}/download">Download .md</a>
+    {% if a.jira_issue_key %}<code>Jira: {{ a.jira_issue_key }}</code>{% endif %}
+    <code>sha256: {{ a.sha256[:16] }}&hellip;</code>
+  </div>
+</section>
+{% endblock %}
