@@ -128,13 +128,32 @@ class RunWatchRegistry:
                     continue  # still running / unknown status: keep polling
 
                 # --- deliver the ADR-0012 callback with bounded backoff -----
-                payload = {
+                payload: dict = {
                     "task_id": task_id,
                     "acms_agent_id": agent_id,
                     "a2a_run_id": run_id,
                     "status": status,
                     "completed_at": datetime.now(timezone.utc).isoformat(),
                 }
+                # The bridge run carries real token usage (worker-reported) —
+                # pass it through as usage_reference so the economics usage
+                # capture stores real tokens (hit live 2026-10-01: the canary's
+                # cost_attribution row had NULL tokens because the watcher
+                # callback carried no usage).
+                run_usage = (run or {}).get("usage")
+                if isinstance(run_usage, dict) and run_usage:
+                    usage_ref = {}
+                    for src_key, dst_key in (
+                        ("input_tokens", "input_tokens"),
+                        ("output_tokens", "output_tokens"),
+                        ("cached_input_tokens", "cached_input_tokens"),
+                        ("total_tokens", "total_tokens"),
+                    ):
+                        val = run_usage.get(src_key)
+                        if isinstance(val, int) and val >= 0:
+                            usage_ref[dst_key] = val
+                    if usage_ref:
+                        payload["usage_reference"] = usage_ref
                 if status == "FAILED":
                     err = (run or {}).get("error") or (run or {}).get("detail")
                     if err:

@@ -13,7 +13,7 @@ from acms.run_watcher import WatchDeps, testing_registry
 
 
 class FakeBridge:
-    def __init__(self, statuses: list[str | Exception]):
+    def __init__(self, statuses: list[str | dict | Exception]):
         self.statuses = list(statuses)
         self.calls = 0
 
@@ -215,3 +215,78 @@ async def test_watcher_failed_run_carries_error_summary(db):
             break
     assert poster.payloads and poster.payloads[0]["status"] == "FAILED"
     assert "boom" in (poster.payloads[0].get("error_summary") or "")
+
+
+@pytest.mark.asyncio
+async def test_watcher_carries_run_usage_as_usage_reference(db):
+    """Live-found 2026-10-01: the watcher callback carried no usage, so the
+    cost_attribution row stored NULL tokens even though the bridge run
+    reported real usage. The callback must pass run.usage through."""
+    from uuid import uuid4
+
+    from datetime import datetime, timezone
+
+    from acms.work_models import ExecutionTaskRecord, WorkItemRecord
+
+    now = datetime.now(timezone.utc)
+    work_id = str(uuid4())
+    db.add(WorkItemRecord(work_item_id=work_id, title="usage watcher test",
+                          created_at=now, updated_at=now))
+    task_id = str(uuid4())
+    db.add(ExecutionTaskRecord(task_id=task_id, work_item_id=work_id,
+                               agent_id=str(uuid4()),
+                               external_task_id="run_u", status="RUNNING",
+                               started_at=now))
+    await db.commit()
+
+    poster = FakePoster()
+    reg = testing_registry()
+    run = {"status": "completed",
+           "usage": {"input_tokens": 13605, "output_tokens": 84,
+                     "total_tokens": 13689}}
+    reg._watches[task_id] = asyncio.create_task(reg._watch(
+        task_id, make_deps(FakeBridge([run]), poster)))
+    for _ in range(200):
+        await asyncio.sleep(0.02)
+        if task_id not in reg._watches:
+            break
+
+    assert poster.payloads, "watcher delivered nothing"
+    p = poster.payloads[0]
+    assert p["status"] == "SUCCEEDED"
+    assert p["usage_reference"] == {"input_tokens": 13605, "output_tokens": 84,
+                                    "total_tokens": 13689}
+
+
+@pytest.mark.asyncio
+async def test_watcher_omits_malformed_usage(db):
+    """Non-int / negative usage values must be filtered, not forwarded."""
+    from uuid import uuid4
+
+    from datetime import datetime, timezone
+
+    from acms.work_models import ExecutionTaskRecord, WorkItemRecord
+
+    now = datetime.now(timezone.utc)
+    work_id = str(uuid4())
+    db.add(WorkItemRecord(work_item_id=work_id, title="bad usage watcher test",
+                          created_at=now, updated_at=now))
+    task_id = str(uuid4())
+    db.add(ExecutionTaskRecord(task_id=task_id, work_item_id=work_id,
+                               agent_id=str(uuid4()),
+                               external_task_id="run_u2", status="RUNNING",
+                               started_at=now))
+    await db.commit()
+
+    poster = FakePoster()
+    reg = testing_registry()
+    run = {"status": "completed",
+           "usage": {"input_tokens": "lots", "output_tokens": -5}}
+    reg._watches[task_id] = asyncio.create_task(reg._watch(
+        task_id, make_deps(FakeBridge([run]), poster)))
+    for _ in range(200):
+        await asyncio.sleep(0.02)
+        if task_id not in reg._watches:
+            break
+
+    assert poster.payloads and "usage_reference" not in poster.payloads[0]
