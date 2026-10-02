@@ -478,3 +478,28 @@ def test_github_domain_absent_when_unconfigured(tmp_path):
                            acms_client=FakeAcms(), llm_client=None)
     names = {c.name for c in server.registry._capabilities.values()}
     assert not any(n.startswith("github.") for n in names)
+
+
+def test_repo_resource_url_encoded_owner(tmp_path):
+    # owner/name contains a slash; MCP template params arrive percent-encoded
+    # (owner%2Fname) so resolvers must receive the decoded owner/name.
+    gh = FakeGithubClient()
+    server = build_server_at(tmp_path, gh)
+    cap = server.registry._capabilities["github.repo.get"]
+    identity = make_identity()
+    out = _run(cap.handler(identity, {"repo": "startupteams%2Facms-project-framework"}))
+    assert out["full_name"].endswith("acms-project-framework")
+
+
+def test_unknown_tool_args_rejected(tmp_path):
+    # _bind_args must NOT silently drop unknown args: an ignored branch arg
+    # would mask policy violations on the ownership surface.
+    gh = FakeGithubClient()
+    server = build_server_at(tmp_path, gh)
+    identity = make_identity()
+    from mcp_gateway.errors import ValidationError_
+    with pytest.raises(ValidationError_) as ei:
+        _call_tool(server, "github_branch_create", identity,
+                   repo="startupteams/acms-project-framework", base="main",
+                   branch="agent/FORBIDDEN-uid-999")
+    assert "unknown argument" in str(ei.value)

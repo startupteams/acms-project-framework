@@ -12,6 +12,7 @@ from __future__ import annotations
 import contextvars
 import logging
 import time
+import urllib.parse
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
@@ -1222,6 +1223,10 @@ class GatewayServer:
                                                    mime_type="application/json"))
             else:
                 async def tpl_fn(**kwargs):
+                    # owner/name URIs contain a slash; MCP clients pass the raw
+                    # URI — unquote params so "owner%2Fname" resolves to
+                    # "owner/name" before the resolver validates it.
+                    kwargs = {k: urllib.parse.unquote(v) for k, v in kwargs.items()}
                     identity = CURRENT_IDENTITY.get()
                     entry = AuditEntry(
                         agent_name=identity.agent_name if identity else "(none)",
@@ -1296,24 +1301,33 @@ class GatewayServer:
             cap.handler = _direct
             self.registry.register(cap)
 
+        def _unquote_params(uri_params):
+            # owner/name URIs arrive percent-encoded through MCP template
+            # matching ({repo} = [^/]+ in the SDK) — decode before validation.
+            return {k: urllib.parse.unquote(v) for k, v in (uri_params or {}).items()}
+
         def r_repo(identity, uri_params):
+            uri_params = _unquote_params(uri_params)
             repo = uri_params.get("repo", "")
             _repo_in_scope(identity, repo)
             return _require_github().get_repo(repo)
 
         def r_branch(identity, uri_params):
+            uri_params = _unquote_params(uri_params)
             repo = uri_params.get("repo", "")
             branch = uri_params.get("branch", "")
             _repo_in_scope(identity, repo)
             return _require_github().get_branch(repo, branch)
 
         def r_commit(identity, uri_params):
+            uri_params = _unquote_params(uri_params)
             repo = uri_params.get("repo", "")
             ref = uri_params.get("ref", "")
             _repo_in_scope(identity, repo)
             return _require_github().get_commit(repo, ref)
 
         def r_pr(identity, uri_params):
+            uri_params = _unquote_params(uri_params)
             repo = uri_params.get("repo", "")
             num_raw = uri_params.get("number", "")
             try:
@@ -1324,12 +1338,14 @@ class GatewayServer:
             return _require_github().get_pr(repo, number)
 
         def r_checks(identity, uri_params):
+            uri_params = _unquote_params(uri_params)
             repo = uri_params.get("repo", "")
             ref = uri_params.get("ref", "")
             _repo_in_scope(identity, repo)
             return _require_github().get_checks(repo, ref)
 
         def r_issue(identity, uri_params):
+            uri_params = _unquote_params(uri_params)
             repo = uri_params.get("repo", "")
             num_raw = uri_params.get("number", "")
             try:
@@ -1573,6 +1589,12 @@ def _bind_args(fn):
 
     async def bound(identity, ctx):
         args = dict(ARGS_HOLDER.get())
+        unknown = [k for k in args if k not in sig.parameters]
+        if unknown:
+            raise ValidationError_(
+                f"unknown argument(s) {sorted(unknown)} — args silently "
+                "ignored would mask policy violations (branch-ownership "
+                "surface is argument-shaped)")
         kwargs = {k: v for k, v in args.items() if k in sig.parameters}
         return await fn(identity, ctx, **kwargs)
 

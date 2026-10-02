@@ -305,6 +305,29 @@ class TokenStore:
             updated += cur.rowcount
         return updated
 
+    def grant_assignment_scopes(self, agent_name: str, scopes: list[str]) -> int:
+        """UNION new scopes into every ACTIVE assignment token of the agent
+        (W3 follow-on to the W2 grant path: mint_assignment defaults lack
+        github.* — metadata-only union, credentials untouched)."""
+        if not scopes:
+            return 0
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT token_id, scopes_json FROM assignment_tokens "
+                "WHERE agent_name=? AND revoked_at IS NULL", (agent_name,)
+            ).fetchall()
+        updated = 0
+        for row in rows:
+            current = set(_parse(row["scopes_json"]))
+            merged = json.dumps(sorted(current | set(scopes)))
+            with self._lock, self._conn:
+                cur = self._conn.execute(
+                    "UPDATE assignment_tokens SET scopes_json=? WHERE token_id=?",
+                    (merged, row["token_id"]),
+                )
+            updated += cur.rowcount
+        return updated
+
     def revoke_assignment_token(self, token_id: str, reason: str) -> bool:
         with self._lock, self._conn:
             cur = self._conn.execute(
