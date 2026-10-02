@@ -18,6 +18,7 @@ WORKDIR /app
 
 COPY pyproject.toml README.md alembic.ini ./
 COPY acms ./acms
+COPY mcp_gateway ./mcp_gateway
 COPY migrations ./migrations
 
 RUN pip install --no-cache-dir .
