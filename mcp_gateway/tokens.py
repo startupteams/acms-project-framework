@@ -149,7 +149,8 @@ class TokenStore:
         # domain services; risk classes + roles gate the dangerous paths (the
         # per-scope split was over-narrow: llm.read is read-only metadata).
         default_scopes = ["acms.read", "acms.write", "llm.read", "llm.write",
-                          "runtime.write", "proxmox.write", "power.read"]
+                          "runtime.write", "proxmox.write", "power.read",
+                          "jira.read", "jira.write"]
         rec = AgentTokenRecord(
             token_hash=_hash(raw),
             agent_name=agent_name,
@@ -210,7 +211,9 @@ class TokenStore:
             jira_issue_key=jira_issue_key,
             repositories=repositories or [],
             tools=tools or [],
-            scopes=scopes or ["acms.read", "acms.write"],
+            # W6: assignment tokens carry jira.* too (the binding is per-work);
+            # domain AUTHORITY stays with risk classes + roles.
+            scopes=scopes or ["acms.read", "acms.write", "jira.read", "jira.write"],
             created_at=now,
             expires_at=now + timedelta(hours=ttl_hours),
         )
