@@ -38,6 +38,9 @@ _STATUSES = [s.value for s in WorkItemStatus]
 _KINDS = [k.value for k in WorkItemKind]
 _CLOSE_STATUSES = ("COMPLETED", "RELEASED", "SUSPENDED")
 
+# Canonical-handoff artifact types (§9 + legacy "handoff" rows honored)
+HANDOFF_TYPES = ("work_handoff", "handoff")
+
 
 def _require_admin(user) -> None:
     """Mutations are Administrator-only in this slice (plan §13)."""
@@ -234,16 +237,16 @@ async def work_detail(
 
     # Canonical handoff (STEA-004 §9): exactly ONE work_handoff artifact per
     # terminal item — surfaced prominently on this page (§9 UI requirement).
+    # Legacy rows typed "handoff" (pre-§9 naming) are honored as canonical too.
     canonical_handoff = None
     from ..a2a_models import ArtifactRecord
-    from ..canonical_handoff import HANDOFF_TYPE
 
     from sqlalchemy import select as _sel
 
     ch = (await db.scalars(
         _sel(ArtifactRecord)
         .where(ArtifactRecord.work_item_id == work_item_id)
-        .where(ArtifactRecord.artifact_type == HANDOFF_TYPE)
+        .where(ArtifactRecord.artifact_type.in_(HANDOFF_TYPES))
         .order_by(ArtifactRecord.created_at.desc()).limit(1))).first()
     if ch is not None:
         canonical_handoff = {

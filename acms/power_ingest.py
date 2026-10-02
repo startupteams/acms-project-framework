@@ -113,8 +113,13 @@ async def ingest_power_snapshot(db: AsyncSession) -> dict:
     rec = PowerSnapshotRecord(
         snapshot_id=PowerSnapshotRecord.new_id(),
         captured_at=now, source="llm-manager-facility",
+        # Phase-C fix: persist the FULL payload (incl. channels + rate +
+        # collector detail) — latest_power_summary() reconstructs the §17
+        # view from THIS payload, so dropping channels made the stored
+        # snapshot render totals-only while ?refresh=1 showed channels.
         payload_json=json.dumps({"error": payload.get("error"), "totals": totals,
-                                 "collector_health": bool(collector.get("healthy"))})[:500],
+                                 "channels": channels, "rate": payload.get("rate", {}),
+                                 "collector": collector})[:4000],
         total_kwh_24h=totals.get("kwh_24h"),
         total_cost_usd_24h=totals.get("cost_usd_24h"),
         total_kwh_30d=totals.get("kwh_30d"),
