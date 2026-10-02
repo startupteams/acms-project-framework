@@ -10,7 +10,9 @@ assignment reached the agent.
 """
 from __future__ import annotations
 
+import json
 from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..db import get_session
@@ -114,6 +116,7 @@ async def work_list(
     request: Request,
     status_filter: str | None = None,
     kind_filter: str | None = None,
+    jira_history: int | None = None,
     user=Depends(current_user),
     db: AsyncSession = Depends(get_session),
 ):
@@ -125,6 +128,32 @@ async def work_list(
         items = [i for i in items if i.kind == kind_filter]
     # Newest first for operator ergonomics.
     items = sorted(items, key=lambda i: i.updated_at, reverse=True)
+    jira_runs = []
+    jira_outcomes: dict[str, list[dict]] = {}
+    if jira_history:
+        from ..jira_models import JiraReconciliationRunRecord
+        from ..telemetry_models import AgentEventRecord
+
+        jira_runs = list((await db.scalars(
+            select(JiraReconciliationRunRecord)
+            .order_by(JiraReconciliationRunRecord.created_at.desc()).limit(25)
+        )).all())
+        run_ids = {r.run_id for r in jira_runs}
+        if run_ids:
+            event_rows = (await db.scalars(
+                select(AgentEventRecord)
+                .where(AgentEventRecord.event_type == "JIRA_RECONCILIATION_OUTCOME")
+                .order_by(AgentEventRecord.timestamp.desc()).limit(1000)
+            )).all()
+            for event in event_rows:
+                try:
+                    metadata = json.loads(event.metadata_json or "{}")
+                except (TypeError, ValueError):
+                    continue
+                run_id = metadata.get("run_id")
+                if isinstance(run_id, str) and run_id in run_ids:
+                    jira_outcomes.setdefault(run_id, []).append(
+                        {"timestamp": event.timestamp, **metadata})
     context = {
         "user": user,
         "items": [_view_item(i, parents.get(i.parent_id)) for i in items],
@@ -132,6 +161,9 @@ async def work_list(
         "kinds": _KINDS,
         "status_filter": status_filter or "",
         "kind_filter": kind_filter or "",
+        "jira_history": bool(jira_history),
+        "jira_runs": jira_runs,
+        "jira_outcomes": jira_outcomes,
         "error": request.query_params.get("error"),
     }
     return _templates().TemplateResponse(request, "work_list.html", context)

@@ -63,6 +63,95 @@ class CompletionCallbackRequest(BaseModel):
     usage_reference: dict | None = None
 
 
+async def _finalize_jira_workflow(
+    db: AsyncSession, *, task: ExecutionTaskRecord, terminal_status: str,
+    handoff: dict | None, error_summary: str | None,
+) -> None:
+    """Advance ACMS/Jira to review and publish the exact canonical artifact URL."""
+    from .a2a_models import ArtifactRecord
+    from .jira_client import JiraClient
+    from .settings import get_settings
+    from .telemetry_models import AgentEventRecord
+    from .work_models import AssignmentRecord, WorkItemRecord
+
+    work = await db.get(WorkItemRecord, task.work_item_id)
+    if work is None:
+        return
+    if terminal_status == "SUCCEEDED":
+        work.status = "in_review"
+        assignments = (await db.scalars(
+            select(AssignmentRecord)
+            .where(AssignmentRecord.work_item_id == work.work_item_id)
+            .where(AssignmentRecord.status == "ACTIVE")
+        )).all()
+        for assignment in assignments:
+            assignment.status = "COMPLETED"
+            assignment.closed_at = datetime.now(timezone.utc)
+    if not work.jira_issue_key:
+        return
+
+    # Completion callbacks and fallback reconciliation may both arrive. One
+    # durable event makes Jira comment/transition exactly-once per Work Item.
+    posted = (await db.scalars(
+        select(AgentEventRecord.event_id)
+        .where(AgentEventRecord.event_type == "JIRA_HANDOFF_POSTED")
+        .where(AgentEventRecord.work_key == work.work_key)
+        .limit(1)
+    )).first()
+    if posted is not None:
+        return
+
+    artifact = None
+    artifact_id = (handoff or {}).get("artifact_id")
+    if artifact_id:
+        artifact = await db.get(ArtifactRecord, artifact_id)
+    if artifact is None:
+        artifact = (await db.scalars(
+            select(ArtifactRecord)
+            .where(ArtifactRecord.work_item_id == work.work_item_id)
+            .where(ArtifactRecord.artifact_type == "work_handoff")
+            .order_by(ArtifactRecord.created_at.desc())
+            .limit(1)
+        )).first()
+    if artifact is None:
+        return
+
+    settings = get_settings()
+    base = (settings.callback_base_url or "https://10.0.20.122").rstrip("/")
+    artifact_url = f"{base}/ui/artifacts/{artifact.artifact_uid or artifact.artifact_id}"
+    result_word = "succeeded" if terminal_status == "SUCCEEDED" else terminal_status.lower()
+    comment = (
+        f"## BLUF\n\nACMS execution **{result_word}** for `{work.work_uid or work.work_key}`.\n\n"
+        f"- **Artifact UID:** `{artifact.artifact_uid or artifact.artifact_id}`\n"
+        f"- **Canonical Markdown handoff:** {artifact_url}\n"
+        f"- **SHA-256:** `{artifact.sha256}`\n"
+    )
+    if error_summary:
+        comment += f"- **Error summary:** {error_summary[:400]}\n"
+    try:
+        client = JiraClient()
+        client.add_comment(work.jira_issue_key, comment)
+        if terminal_status == "SUCCEEDED" and client.status_mutation_enabled:
+            client.transition_status(work.jira_issue_key, "IN REVIEW")
+        await add_event(
+            db, event_type="JIRA_HANDOFF_POSTED", actor_source="completion_callback",
+            agent_id=task.agent_id, work_key=work.work_key,
+            summary=f"Jira {work.jira_issue_key} received BLUF + canonical handoff URL",
+            metadata={"issue_key": work.jira_issue_key,
+                      "artifact_uid": artifact.artifact_uid,
+                      "artifact_url": artifact_url,
+                      "terminal_status": terminal_status},
+        )
+    except Exception as exc:  # task completion remains authoritative
+        await add_event(
+            db, event_type="JIRA_OUTBOUND_FAILED", actor_source="completion_callback",
+            agent_id=task.agent_id, work_key=work.work_key,
+            summary=f"Jira {work.jira_issue_key} completion write-back failed: {str(exc)[:200]}",
+            metadata={"issue_key": work.jira_issue_key, "phase": "completion",
+                      "artifact_url": artifact_url, "error": str(exc)[:400]},
+        )
+
+
 async def process_completion_callback(db: AsyncSession, payload: CompletionCallbackRequest) -> dict[str, Any]:
     """Validate identity, close the task + session atomically, audit the fact.
 
@@ -185,17 +274,20 @@ async def process_completion_callback(db: AsyncSession, payload: CompletionCallb
     # ---- canonical work handoff (STEA-004 plan §9) ---------------------------
     # Every terminal Work Item gets exactly one canonical Markdown handoff.
     # Never breaks completion (swallows + audits internally).
-    try:
-        from .canonical_handoff import generate_canonical_handoff
+    # Canonical Markdown handoff: exactly one per terminal Work Item (§9).
+    from .canonical_handoff import generate_canonical_handoff
 
-        await generate_canonical_handoff(
-            db, task=task, status=payload.status, completed_at=completed_at,
-            error_summary=payload.error_summary,
-            usage_reference=payload.usage_reference,
-            handoff_reference=payload.handoff_reference,
-        )
-    except Exception:  # noqa: BLE001 — belt & braces around the never-raise helper
-        pass
+    handoff = await generate_canonical_handoff(
+        db, task=task, status=payload.status, completed_at=completed_at,
+        error_summary=payload.error_summary,
+        usage_reference=payload.usage_reference,
+        handoff_reference=payload.handoff_reference,
+    )
+    await _finalize_jira_workflow(
+        db, task=task, terminal_status=payload.status,
+        handoff=handoff, error_summary=payload.error_summary,
+    )
     await db.commit()
+
     return {"result": "closed", "task_id": task.task_id,
             "task_status": task.status, "session_id": session_id}

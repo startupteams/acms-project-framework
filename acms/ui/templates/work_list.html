@@ -29,6 +29,9 @@
     <button type="submit" class="button secondary">Check Jira now</button>
     <span class="muted">executes reconciliation immediately — eligible work may start, pause, or stop (Jira is the human kickoff gate)</span>
   </form>
+  <a class="button secondary" href="/ui/work?jira_history={{ 0 if jira_history else 1 }}">
+    {{ "Hide" if jira_history else "Show" }} reconciliation history
+  </a>
 </section>
 {% endif %}
 
@@ -38,6 +41,34 @@
   <strong>{{ request.query_params.get('jira_state') }}</strong>{% if request.query_params.get('jira_coalesced') %}
   (coalesced into the already-running reconciliation){% endif %}. See
   <a href="/ui/work?jira_history=1">run history</a> for per-issue counts.</p>
+</section>
+{% endif %}
+
+{% if jira_history %}
+<section class="panel">
+  <h2>Recent Jira reconciliation runs</h2>
+  {% if jira_runs %}
+  <table class="data">
+    <thead><tr><th>Run</th><th>State</th><th>Counts</th><th>Per-issue outcomes</th></tr></thead>
+    <tbody>
+    {% for run in jira_runs %}
+      <tr>
+        <td><code>{{ run.run_id }}</code><br><span class="muted">{{ run.trigger }} · {{ run.created_at.strftime('%Y-%m-%d %H:%M:%S') }}</span></td>
+        <td><strong>{{ run.state }}</strong><br><span class="muted">{{ run.scan_completeness or 'pending' }}</span></td>
+        <td>examined {{ run.examined_count }} · added {{ run.added_count }} · started {{ run.started_count }} · failed {{ run.failed_count }}</td>
+        <td>
+          {% set outcomes = jira_outcomes.get(run.run_id, []) %}
+          {% if outcomes %}
+            {% for outcome in outcomes %}
+              <div><strong>{{ outcome.issue_key }}</strong>: {{ outcome.outcome }} — {{ outcome.reason }}</div>
+            {% endfor %}
+          {% else %}<span class="muted">No recorded outcomes (legacy run or no issues examined).</span>{% endif %}
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}<p class="muted">No reconciliation runs recorded.</p>{% endif %}
 </section>
 {% endif %}
 

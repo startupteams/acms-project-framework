@@ -738,6 +738,26 @@ Executive Agents keep a persistent identity with fresh reasoning sessions, recon
 
 **Provenance:** Human-Directed (AI–Human SOP, 2026-09-27).
 
+### ACMS-REQ-063 - Jira-governed intake and completion write-back
+
+**Sprint Priority:** 1
+
+**Requirement**
+
+An explicitly eligible Jira issue (dedicated AI assignee plus configured ready status) shall be imported exactly once into ACMS, mapped to its Project, assigned to an available configured worker, and dispatched through the authoritative execution path. Verified completion shall produce a canonical Markdown handoff, expose the exact Artifact URL, and update Jira through the configured write-back policy.
+
+**Acceptance criteria**
+
+- `Check Jira now` records a durable outcome for every examined issue; a completed run never hides a silent skip.
+- An eligible unlinked issue creates exactly one Work Item, Work UID, issue link, primary assignment, and execution task.
+- Jira project-key mapping is fail-closed; an unmapped project creates no Work Item and records the reason.
+- Repeated reconciliation is idempotent and cannot duplicate the Work Item or issue link.
+- Dispatch uses the existing budget/Jira-gated `dispatch_service` path and records the bridge acknowledgement.
+- Successful terminal execution creates exactly one canonical Markdown handoff Artifact, posts a concise Jira BLUF with its exact URL, and transitions to `IN REVIEW` only when status mutation is explicitly enabled.
+- Failed or partial write-back is durable and visible without rewriting successful execution history.
+
+**Provenance:** Human-Directed (STEA-004 Jira Workflow Recovery and Internal MCP Gateway plan, 2026-10-02).
+
 ---
 
 ## Feature Set: Security and External-Agent Isolation

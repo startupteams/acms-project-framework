@@ -17,6 +17,7 @@ admin-capable mutation; UI actions go through the UI layer with CSRF.
 """
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -111,6 +112,30 @@ async def get_run(run_id: str, db: AsyncSession = Depends(get_session)):
                 "paused_acknowledged", "stopped", "stopped_acknowledged",
                 "unchanged", "failed")},
             "error_summary": r.error_summary}
+
+
+@router.get("/reconcile/runs/{run_id}/outcomes", dependencies=[Depends(require_admin_token)])
+async def get_run_outcomes(run_id: str, db: AsyncSession = Depends(get_session)):
+    """Durable per-issue decisions for one reconciliation run."""
+    from .telemetry_models import AgentEventRecord
+
+    rows = (await db.scalars(
+        select(AgentEventRecord)
+        .where(AgentEventRecord.event_type == "JIRA_RECONCILIATION_OUTCOME")
+        .where(AgentEventRecord.metadata_json.like(f"%{run_id}%"))
+        .order_by(AgentEventRecord.timestamp.asc())
+        .limit(1000)
+    )).all()
+    outcomes = []
+    for row in rows:
+        try:
+            meta = json.loads(row.metadata_json or "{}")
+        except (TypeError, ValueError):
+            continue
+        if meta.get("run_id") != run_id:
+            continue
+        outcomes.append({"timestamp": _iso(row.timestamp), **meta})
+    return {"run_id": run_id, "outcomes": outcomes}
 
 
 @router.get("/schedule", dependencies=[Depends(require_admin_token)])

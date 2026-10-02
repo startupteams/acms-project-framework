@@ -232,6 +232,8 @@ async def execute_reconciliation(db: AsyncSession, run: JiraReconciliationRunRec
         except Exception as e:  # per-issue isolation — one bad issue never aborts the pass
             problems.append(f"{issue.key}: {str(e)[:140]}")
             counts.failed += 1
+            await _record_issue_outcome(
+                db, run, issue, outcome="failed", reason=str(e)[:400])
     await db.commit()
 
     # ---- step 6: scheduler bookkeeping (durable, UTC) ------------------------
@@ -297,21 +299,25 @@ async def _process_observation(db: AsyncSession, run: JiraReconciliationRunRecor
                                             else "scheduled_poll"))
 
     if link is None:
-        # A ready+AI-assigned candidate NOT yet linked → importable candidate.
-        # Intake (creating Work Items) is NOT automatic here: §7.1 requires the
-        # human kickoff contract — the candidate is RECORDED (event) so the UI
-        # can offer import. Auto-start applies only to ALREADY-LINKED work.
-        if status_u in ready_statuses():
+        # Human intent is already explicit in Jira: the dedicated AI account is
+        # the assignee AND the status is in the configured ready set.  Check Jira
+        # now is explicitly execution-capable, so this service must create and
+        # start the one high-level ACMS work item rather than silently observe it.
+        verdict = evaluate_observation(
+            status_name=issue.status,
+            assignee_account_id=assignee_account,
+            has_local_hold=False,
+        )
+        if not verdict.eligible:
             counts.unchanged += 1
-            await add_event(
-                db, event_type="JIRA_CANDIDATE_OBSERVED", actor_source="jira_reconcile",
-                summary=f"ready candidate {key} observed (not yet linked to ACMS work); "
-                        f"human must link/import before execution",
-                metadata={"issue_key": key, "issue_id": issue_id, "status": issue.status,
-                          "assignee_account_id": assignee_account, "run_id": run.run_id},
-            )
-        else:
-            counts.unchanged += 1
+            await _record_issue_outcome(
+                db, run, issue, outcome="not_eligible", reason=verdict.reason)
+            return
+        result = await _intake_and_start(db, run, issue, counts)
+        await _record_issue_outcome(
+            db, run, issue, outcome=result["outcome"], reason=result["reason"],
+            work_item_id=result.get("work_item_id"), agent_id=result.get("agent_id"),
+            task_id=result.get("task_id"))
         return
 
     # ---- LINKED issue: fetch the authorized work item(s) --------------------
@@ -376,11 +382,272 @@ async def _process_observation(db: AsyncSession, run: JiraReconciliationRunRecor
                                 f"dispatch inhibited until the mapping is configured",
                         metadata={"issue_key": key, "status": issue.status, "run_id": run.run_id})
 
+    await _record_issue_outcome(
+        db, run, issue, outcome="reconciled",
+        reason=f"linked work evaluated at Jira status {issue.status}",
+        work_item_id=work.work_item_id,
+    )
+
 
 def _has_proven_ready_generation(link: JiraIssueLinkRecord) -> bool:
     """A generation exists only when a ready observation PRECEDED a start."""
     return (link.generation_count or 0) > 0 and link.last_ready_observation_at is not None \
         and link.last_generation_started_at is not None
+
+
+async def _record_issue_outcome(
+    db: AsyncSession, run: JiraReconciliationRunRecord, issue: Any, *,
+    outcome: str, reason: str, work_item_id: str | None = None,
+    agent_id: str | None = None, task_id: str | None = None,
+) -> None:
+    """Persist a queryable outcome for every examined issue in the audit log."""
+    await add_event(
+        db, event_type="JIRA_RECONCILIATION_OUTCOME", actor_source="jira_reconcile",
+        agent_id=agent_id,
+        summary=f"Jira {issue.key}: {outcome} — {reason}"[:512],
+        metadata={
+            "run_id": run.run_id, "issue_key": issue.key,
+            "issue_id": str(getattr(issue, "issue_id", "") or ""),
+            "outcome": outcome, "reason": reason[:512],
+            "work_item_id": work_item_id, "agent_id": agent_id,
+            "task_id": task_id,
+        },
+    )
+
+
+def _intake_instruction(issue: Any, work_uid: str | None) -> str:
+    description = (getattr(issue, "description", "") or "").strip()
+    return (
+        f"Execute Jira {issue.key} end-to-end for ACMS work {work_uid or 'pending UID'}.\n\n"
+        f"Summary: {issue.summary}\n"
+        f"Priority: {getattr(issue, 'priority', '') or 'unspecified'}\n"
+        f"Jira URL: {issue.url}\n\n"
+        f"Requested work:\n{description}\n\n"
+        "Execution requirements:\n"
+        "1. Work only in startupteams/acms-project-framework and follow repository AGENTS.md.\n"
+        "2. Use branch AGENT_STEA004_ENTREPRENEUR; never push directly to main.\n"
+        "3. Implement the smallest safe change, run the full test suite, open/merge a PR, and deploy "
+        "with deploy/release.sh so rollback remains available.\n"
+        "4. Verify production /version, /health, Alembic state, and the requested acceptance criteria.\n"
+        "5. Create a concise Markdown handoff in the repository or work record with BLUF, changes, "
+        "tests, production evidence, PR/SHA, rollback, and remaining work. Never include secrets.\n"
+        "6. Do not transition Jira directly; ACMS owns policy-governed Jira updates after your run."
+    )
+
+
+async def _project_for_issue(db: AsyncSession, issue: Any):
+    from .a2a_models import ProjectRecord
+
+    key = (getattr(issue, "project_key", None) or issue.key.split("-")[0]).upper()
+    return (await db.scalars(
+        select(ProjectRecord).where(ProjectRecord.jira_project_key == key).limit(1)
+    )).first()
+
+
+async def _select_idle_worker(db: AsyncSession):
+    """Pick a configured healthy/known Hermes worker with no active lock."""
+    from .bridge import get_bridge_for_agent
+    from .models import AgentRecord
+    from .telemetry_models import AgentStatusCurrentRecord
+    from .work_models import AssignmentRecord, ExecutionTaskRecord
+
+    active_ids = set((await db.scalars(
+        select(AssignmentRecord.agent_id).where(AssignmentRecord.status == "ACTIVE")
+    )).all())
+    active_ids.update(aid for aid in (await db.scalars(
+        select(ExecutionTaskRecord.agent_id).where(ExecutionTaskRecord.status == "RUNNING")
+    )).all() if aid)
+    statuses = {s.agent_id: s.connectivity for s in (await db.scalars(
+        select(AgentStatusCurrentRecord)
+    )).all()}
+    agents = list((await db.scalars(
+        select(AgentRecord).where(AgentRecord.worker_uid.is_not(None)).order_by(AgentRecord.worker_uid)
+    )).all())
+    # Prefer explicitly healthy workers, then workers whose telemetry is still
+    # unknown; dispatch itself remains the final fail-closed bridge check.
+    agents.sort(key=lambda a: (0 if statuses.get(a.agent_id) == "HEALTHY" else 1,
+                               a.worker_uid or "999"))
+    for agent in agents:
+        if agent.agent_id in active_ids:
+            continue
+        if get_bridge_for_agent(agent.agent_id) is not None:
+            return agent
+    return None
+
+
+async def _assign_and_dispatch(
+    db: AsyncSession, run: JiraReconciliationRunRecord, issue: Any,
+    work: WorkItemRecord, link: JiraIssueLinkRecord, counts: ReconcileCounts,
+) -> dict[str, Any]:
+    from . import work_service
+    from .dispatch_service import dispatch_work
+    from .work_models import AssignmentCreate
+
+    agent = await _select_idle_worker(db)
+    if agent is None:
+        return {"outcome": "queued_no_worker", "reason": "no configured idle worker",
+                "work_item_id": work.work_item_id}
+    assignment, err = await work_service.assign_primary(
+        db, AssignmentCreate(agent_id=agent.agent_id, work_item_id=work.work_item_id),
+        assigned_by="jira_reconcile",
+    )
+    if assignment is None:
+        return {"outcome": "queued_assignment_failed", "reason": err or "assignment failed",
+                "work_item_id": work.work_item_id, "agent_id": agent.agent_id}
+    try:
+        dispatched = await dispatch_work(
+            db, work_item_id=work.work_item_id,
+            instruction=_intake_instruction(issue, work.work_uid),
+            agent_id=agent.agent_id,
+            idempotency_key=f"jira:{issue.key}:generation:{(link.generation_count or 0) + 1}",
+            actor=f"jira_reconcile:{run.run_id}",
+        )
+    except Exception as exc:  # release the primary lock on any failed delivery
+        assignment.status = "RELEASED"
+        assignment.closed_at = datetime.now(timezone.utc)
+        await db.commit()
+        return {"outcome": "queued_dispatch_error", "reason": str(exc),
+                "work_item_id": work.work_item_id, "agent_id": agent.agent_id}
+    if not dispatched.get("dispatched"):
+        assignment.status = "RELEASED"
+        assignment.closed_at = datetime.now(timezone.utc)
+        await db.commit()
+        return {"outcome": "queued_dispatch_blocked", "reason": dispatched.get("reason", "blocked"),
+                "work_item_id": work.work_item_id, "agent_id": agent.agent_id,
+                "task_id": dispatched.get("task_id")}
+
+    now = datetime.now(timezone.utc)
+    assignment.dispatched_at = now
+    assignment.acknowledged_at = now
+    assignment.bound_session_id = dispatched.get("external_task_id")
+    link.generation_count = (link.generation_count or 0) + 1
+    link.last_ready_observation_at = now
+    link.last_generation_started_at = now
+    counts.started += 1
+    await db.commit()
+
+    # Useful lifecycle signal. Jira transition failures are audited but cannot
+    # erase a successfully accepted worker run.
+    try:
+        client = JiraClient()
+        client.add_comment(
+            issue.key,
+            f"## ACMS execution started\n\n"
+            f"- Work: `{work.work_uid or work.work_key}`\n"
+            f"- Worker: `{agent.display_name}`\n"
+            f"- Assignment: `{assignment.assignment_key or assignment.assignment_id}`\n"
+            f"- Runtime task: `{dispatched.get('task_id')}`\n\n"
+            "ACMS will post the canonical handoff and exact artifact URL after verified completion.",
+        )
+        if client.status_mutation_enabled:
+            client.transition_status(issue.key, "IN PROGRESS")
+    except Exception as exc:  # lifecycle write-back is best-effort, fully audited
+        await add_event(
+            db, event_type="JIRA_OUTBOUND_FAILED", actor_source="jira_reconcile",
+            agent_id=agent.agent_id, work_key=work.work_key,
+            summary=f"Jira {issue.key} start write-back failed: {str(exc)[:200]}",
+            metadata={"run_id": run.run_id, "issue_key": issue.key,
+                      "phase": "started", "error": str(exc)[:400]},
+        )
+        await db.commit()
+
+    return {"outcome": "started", "reason": "work created, assignment ACKed, runtime accepted",
+            "work_item_id": work.work_item_id, "agent_id": agent.agent_id,
+            "task_id": dispatched.get("task_id")}
+
+
+async def _intake_and_start(
+    db: AsyncSession, run: JiraReconciliationRunRecord, issue: Any,
+    counts: ReconcileCounts,
+) -> dict[str, Any]:
+    """Create exactly one Jira-backed Work Item, map project, assign, dispatch."""
+    from . import work_service
+    from .jira_gate import ELIGIBLE
+    from .work_models import WorkItemCreate
+
+    issue_id = str(getattr(issue, "issue_id", "") or "")
+    if not issue_id:
+        return {"outcome": "failed", "reason": "Jira issue has no immutable id"}
+    # Race/idempotency guard even though reconciliation runs are leased.
+    existing = (await db.scalars(
+        select(JiraIssueLinkRecord).where(JiraIssueLinkRecord.jira_issue_id == issue_id)
+    )).first()
+    if existing is not None:
+        return {"outcome": "already_linked", "reason": "issue already has one ACMS intake",
+                "work_item_id": existing.work_item_id}
+
+    # Crash-repair guard: UID allocation commits before the issue-link commit.
+    # If a process died in that narrow window, repair instead of duplicating.
+    orphan = (await db.scalars(
+        select(WorkItemRecord).where(
+            (WorkItemRecord.jira_issue_id == issue_id)
+            | (WorkItemRecord.jira_issue_key == issue.key)
+        ).order_by(WorkItemRecord.created_at.asc()).limit(1)
+    )).first()
+    if orphan is not None:
+        repaired = JiraIssueLinkRecord(
+            link_id=new_id(), jira_site_id="default",
+            work_item_id=orphan.work_item_id,
+            jira_issue_id=issue_id, jira_issue_key=issue.key,
+            jira_url=issue.url, last_status=issue.status,
+            last_status_category=issue.status_category,
+            last_assignee_account_id=issue.assignee_account_id,
+            last_assignee_name=issue.assignee,
+            last_checked_at=datetime.now(timezone.utc),
+            last_observation_verdict=VERDICT_ELIGIBLE,
+            last_observation_reason="repaired missing issue link",
+            created_by="jira_reconcile",
+        )
+        db.add(repaired)
+        await db.commit()
+        result = await _assign_and_dispatch(db, run, issue, orphan, repaired, counts)
+        result["reason"] = "repaired missing issue link; " + result["reason"]
+        return result
+
+    project = await _project_for_issue(db, issue)
+    if project is None:
+        return {"outcome": "project_unmapped",
+                "reason": f"no ACMS project maps Jira key {getattr(issue, 'project_key', None) or issue.key.split('-')[0]}"}
+
+    scope = (
+        f"# Jira intake — {issue.key}\n\n"
+        f"- **Jira:** [{issue.key}]({issue.url})\n"
+        f"- **Issue type:** {getattr(issue, 'issue_type', None) or 'Task'}\n"
+        f"- **Priority:** {getattr(issue, 'priority', None) or 'unspecified'}\n"
+        f"- **Source status:** {issue.status}\n\n"
+        f"## Requested work\n\n{(getattr(issue, 'description', '') or '').strip()}"
+    )
+    work = await work_service.create_work_item(db, WorkItemCreate(
+        title=f"{issue.key}: {issue.summary}"[:255],
+        created_by="jira_reconcile", scope_markdown=scope,
+        project_id=project.project_id,
+    ))
+    work.jira_site_id = "default"
+    work.jira_issue_id = issue_id
+    work.jira_issue_key = issue.key
+    work.jira_url = issue.url
+    work.jira_last_status = issue.status
+    work.jira_last_assignee_account_id = issue.assignee_account_id
+    work.jira_last_checked_at = datetime.now(timezone.utc)
+    work.jira_eligibility = ELIGIBLE
+    work.jira_eligibility_reason = "ready status + dedicated AI account assignment"
+    link = JiraIssueLinkRecord(
+        link_id=new_id(), jira_site_id="default", jira_issue_id=issue_id,
+        jira_issue_key=issue.key, jira_url=issue.url, work_item_id=work.work_item_id,
+        created_by="jira_reconcile",
+    )
+    db.add(link)
+    counts.added += 1
+    await add_event(
+        db, event_type="JIRA_WORK_IMPORTED", actor_source="jira_reconcile",
+        work_key=work.work_key,
+        summary=f"Jira {issue.key} imported as {work.work_uid or work.work_key}",
+        metadata={"run_id": run.run_id, "issue_key": issue.key,
+                  "work_item_id": work.work_item_id, "work_uid": work.work_uid,
+                  "project_id": project.project_id},
+    )
+    await db.commit()
+    return await _assign_and_dispatch(db, run, issue, work, link, counts)
 
 
 # ------------------------------------------------------------------ actions
@@ -417,18 +684,17 @@ async def _apply_ready(db: AsyncSession, work: WorkItemRecord, link: JiraIssueLi
         return
 
     if work.status in ("planned",):
-        # §13.2 row 1: import/queue — actual dispatch goes through dispatch_service
-        # (Jira → budget gates enforced there). Mark the work item eligible;
-        # the dispatch call is executed by the bootstrap/intake path, NOT here,
-        # to keep ONE dispatch point. Queueing = marking ready-to-start.
-        link.last_generation_started_at = None  # start recorded by dispatch gate
-        counts.added += 1
+        # The human kickoff contract has passed; Check Jira now is explicitly
+        # execution-capable. Route through the one dispatch path immediately.
+        result = await _assign_and_dispatch(db, run, issue, work, link, counts)
+        if result.get("outcome") != "started":
+            counts.unchanged += 1
         await add_event(db, event_type="JIRA_WORK_QUEUED", actor_source="jira_reconcile",
                         work_key=work.work_key,
-                        summary=f"Jira {issue.key} ready+assigned → work {work.work_key or work.work_item_id[:8]} "
-                                f"queued for gated start",
+                        summary=f"Jira {issue.key} ready+assigned → {result.get('outcome')}",
                         metadata={"issue_key": issue.key, "run_id": run.run_id,
-                                  "generation": (link.generation_count or 0) + 1})
+                                  "generation": (link.generation_count or 0),
+                                  "outcome": result})
     else:
         counts.unchanged += 1
 
