@@ -39,17 +39,31 @@ class FakePowerClient(PowerClient):
     def pdu_assets(self):
         return {"count": 2, "data": [
             {"asset_id": "MIAM-00119", "pdu_id": "MIAM-00151", "outlet": 9,
-             "protected": True, "state": "ON"},
+             "protected": True, "state": "ON",
+             "label": "MIAM-00119 - Dell 7010 Optiplex"},
             {"asset_id": "MIAM-00135", "pdu_id": "MIAM-00152", "outlet": 3,
-             "protected": True, "state": "ON"},
+             "protected": True, "state": "ON",
+             "label": "MIAM-00135"},
         ]}
 
+    def pdu_asset_power_state(self, asset_id: str):
+        if asset_id == "MIAM-00119":
+            return {"asset_id": asset_id, "power_state": "ON",
+                    "asset": {"asset_id": asset_id, "state": "ON"}}
+        return super().pdu_asset_power_state(asset_id)
+
     def pdu_outlet_status(self, pdu_key: str, outlet: int):
-        if pdu_key == "MIAM-XXXX":
-            # exercise the real adapter 404 path (NotFoundError branch)
+        # resolve via the asset index like the real adapter (no canned answer)
+        assets = self.pdu_assets().get("data") or []
+        match = next((a for a in assets
+                      if str(a.get("pdu_id")) == str(pdu_key)
+                      and str(a.get("outlet")) == str(int(outlet))), None)
+        if match is None:
             return super().pdu_outlet_status(pdu_key, outlet)
-        return {"pdu": pdu_key, "outlet": outlet, "state": "ON",
-                "notes": "read-only surface"}
+        state = self.pdu_asset_power_state(match["asset_id"])
+        return {"pdu": pdu_key, "outlet": int(outlet),
+                "asset_id": match.get("asset_id"), "label": match.get("label"),
+                "protected": match.get("protected"), "state": state.get("power_state")}
 
     def facility_power(self):
         stale = self._stale_cooling
@@ -152,6 +166,8 @@ def test_pdu_read_tools(tmp_path):
     assert all(a.get("protected") for a in assets["data"])
     out = _call_tool(server, "pdu_outlet_status", ident, pdu="MIAM-00151", outlet=9)
     assert out["state"] == "ON"
+    assert out["asset_id"] == "MIAM-00119"
+    assert out["protected"] is True
 
 
 def test_no_power_mutation_tools_exist(tmp_path):

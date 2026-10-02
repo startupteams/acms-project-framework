@@ -52,14 +52,42 @@ class PowerClient(ServerManagerClient):
             raise DomainUnavailableError(f"pdu assets failed (HTTP {status})")
         return body
 
-    def pdu_outlet_status(self, pdu_key: str, outlet: int) -> dict:
+    def pdu_asset_power_state(self, asset_id: str) -> dict:
+        """Per-asset power state via SM (GET /api/v1/pdu/assets/{id}/power-state)."""
         status, body = self.request(
-            "GET", f"/api/v1/pdus/{pdu_key}/outlets/{int(outlet)}")
+            "GET", f"/api/v1/pdu/assets/{asset_id}/power-state")
         if status == 404:
-            raise NotFoundError(f"unknown pdu/outlet: {pdu_key}/{outlet}")
+            raise NotFoundError(f"unknown pdu asset: {asset_id}")
         if status != 200:
-            raise DomainUnavailableError(f"pdu outlet status failed (HTTP {status})")
+            raise DomainUnavailableError(
+                f"pdu asset power-state failed (HTTP {status})")
         return body
+
+    def pdu_outlet_status(self, pdu_key: str, outlet: int) -> dict:
+        """Outlet state keyed by the owning asset (plan §27 surface).
+
+        W5 live-found: SM exposes /api/v1/pdu/assets/{id}/power-state (the
+        PDU Manager contract); /api/v1/pdus/{key}/outlets/{n} does NOT exist
+        on SM (that path is the PDU Manager's own API) and always 404'd.
+        Resolution: match the outlet by (pdu_id, outlet) in the asset index
+        and return that asset's power-state.
+        """
+        status, assets = self.request("GET", "/api/v1/pdu/assets")
+        if status != 200:
+            raise DomainUnavailableError(
+                f"pdu assets failed (HTTP {status}) while resolving outlet")
+        match = next((a for a in (assets.get("data") or [])
+                      if str(a.get("pdu_id")) == str(pdu_key)
+                      and str(a.get("outlet")) == str(int(outlet))), None)
+        if match is None:
+            raise NotFoundError(f"unknown pdu/outlet: {pdu_key}/{outlet}")
+        state = self.pdu_asset_power_state(match["asset_id"])
+        return {"pdu": pdu_key, "outlet": int(outlet),
+                "asset_id": match.get("asset_id"),
+                "label": match.get("label"),
+                "protected": match.get("protected"),
+                "state": state.get("power_state") or state.get("state"),
+                "source": "sm:/api/v1/pdu/assets/{id}/power-state"}
 
     # --------------------------------------------------------------- power
     def facility_power(self) -> dict:
