@@ -1,0 +1,97 @@
+{% extends "base.html" %}
+{% block title %}Chat — {{ agent.display_name }} — ACMS{% endblock %}
+{% block content %}
+<p><a href="/ui/agents/{{ agent.agent_id }}">&larr; Agent detail</a></p>
+<h1>Hermes chat — {{ agent.display_name }}
+  {% if agent.worker_uid %}<code class="muted">uid-{{ agent.worker_uid }}</code>{% endif %}</h1>
+
+{% if error %}<section class="notice warn"><p>{{ error }}</p></section>{% endif %}
+{% if notice %}<section class="notice ok"><p>{{ notice }}</p></section>{% endif %}
+{% if bridge_error %}<section class="notice warn"><p>{{ bridge_error }} — no fabricated conversation is shown.</p></section>{% endif %}
+
+<div style="display:flex;gap:1rem;flex-wrap:wrap;align-items:baseline">
+  <span class="muted">Session:</span>
+  {% if harness_sessions %}
+  <form method="get" action="/ui/agents/{{ agent.agent_id }}/chat" class="inline-form">
+    <select name="session_id" onchange="this.form.submit()">
+      <option value="">— pick session —</option>
+      {% for s in harness_sessions %}
+      <option value="{{ s.id }}" {% if s.id == effective_session %}selected{% endif %}>
+        {{ s.title[:50] }}{% if s.model %} · {{ s.model }}{% endif %} · {{ s.message_count }} msgs · {{ s.last_active }}
+      </option>
+      {% endfor %}
+    </select>
+  </form>
+  {% else %}
+  <span class="muted">none reported by harness</span>
+  {% endif %}
+  {% if effective_session %}<code>{{ effective_session[:18] }}</code>{% endif %}
+</div>
+
+<section class="chat-history panel" id="chat-history">
+  {% if rows %}
+  {% for r in rows %}
+    {% if r.kind == 'divider' %}
+      <div class="chat-divider">{{ r.label }}</div>
+    {% elif r.kind == 'human' %}
+      <div class="chat-bubble chat-human">
+        <div class="chat-text">{{ r.text }}</div>
+        <div class="chat-meta">{{ r.ts[:19] if r.ts }}</div>
+      </div>
+    {% elif r.kind == 'agent' %}
+      <div class="chat-bubble chat-agent">
+        <div class="chat-text">{{ r.text }}</div>
+        <div class="chat-meta">{{ r.ts[:19] if r.ts }}</div>
+      </div>
+    {% elif r.kind == 'tool' %}
+      <details class="chat-tool">
+        <summary>Tool: {{ r.tool_name }} — {{ r.summary[:100] }}</summary>
+        {% if r.safe_args %}
+        <div class="chat-tool-args"><span class="muted">arguments (safe fields):</span>
+          <pre>{{ r.safe_args | tojson(indent=1) }}</pre></div>
+        {% endif %}
+        <pre class="chat-tool-raw">{{ r.raw }}</pre>
+        <div class="chat-meta">{{ r.ts[:19] if r.ts }}</div>
+      </details>
+    {% endif %}
+  {% endfor %}
+  {% else %}
+  <p class="muted">{% if effective_session %}No transcript rows returned for this session.{% else %}No active harness session — send a message to start one.{% endif %}</p>
+  {% endif %}
+</section>
+
+<section class="panel chat-input-panel">
+  <h2>Message the agent <span class="muted">— harness slash commands pass through (§21)</span></h2>
+  <form method="post" action="/ui/agents/{{ agent.agent_id }}/chat/send" class="chat-form" autocomplete="off">
+    <input type="hidden" name="session_id" value="{{ effective_session or '' }}">
+    <div class="autocomplete-wrap">
+      <input name="message" id="chat-message" placeholder="Type a message or /command…" required
+             autocomplete="off" oninput="acmsChatAutocomplete(this.value)">
+      <div id="chat-ac" class="autocomplete-list" hidden></div>
+    </div>
+    <button type="submit" class="button">Send</button>
+  </form>
+  <p class="muted">Commands ({{ commands|length }} advertised by the harness):
+    {% for c in commands %}<code>{{ c.command }}</code>{% if not loop.last %} · {% endif %}{% endfor %}</p>
+  <p class="muted">Send with no live session starts a NEW run. Reasoning/chain-of-thought is never rendered (§22).
+  History refreshes on reload; older messages load with the session picker (§22 pagination via harness transcript).</p>
+</section>
+
+<script>
+var ACMS_COMMANDS = {{ commands | tojson }};
+function acmsChatAutocomplete(v) {
+  var box = document.getElementById('chat-ac');
+  if (!v || v.charAt(0) !== '/') { box.hidden = true; return; }
+  var q = v.toLowerCase();
+  var m = ACMS_COMMANDS.filter(function (c) { return c.command.indexOf(q) === 0; });
+  if (!m.length) { box.hidden = true; return; }
+  box.innerHTML = m.map(function (c) {
+    return '<div class="ac-item" onclick="document.getElementById(\'chat-message\').value=\'' +
+      c.command + (c.args ? ' ' : '') + '\';document.getElementById(\'chat-ac\').hidden=true">' +
+      '<code>' + c.command + '</code> ' + (c.args || '') +
+      ' <span class="muted">' + (c.description || '') + '</span></div>';
+  }).join('');
+  box.hidden = false;
+}
+</script>
+{% endblock %}

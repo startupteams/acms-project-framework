@@ -200,6 +200,89 @@ class HermesBridge:
         return self.send_work(work_key=work_key, assignment_key="",
                               instruction=instruction, session_id=session_id)
 
+    # ---------------------------------------------------------------- chat UI (STEA-004 Phase C §20-§24)
+
+    def fetch_capabilities(self) -> dict:
+        """GET /v1/capabilities — machine-readable harness surface (§21).
+        ACMS never hard-codes harness-only commands without this metadata."""
+        return self._get("/v1/capabilities")
+
+    def list_sessions(self) -> list[dict]:
+        """GET /api/sessions — session inventory for history + current-session
+        resolution (verified payload keys on Hermes 0.19.0, 2026-10-01)."""
+        d = self._get("/api/sessions")
+        return d.get("data") or d.get("sessions") or []
+
+    def current_session_id(self) -> str | None:
+        """Most recently active session (same rule as fetch_status)."""
+        rows = self.list_sessions()
+        if not rows:
+            return None
+        rows.sort(key=lambda s: s.get("last_active") or 0, reverse=True)
+        return str(rows[0].get("id") or "") or None
+
+    def fetch_messages(self, session_id: str, limit: int = 200) -> list[dict]:
+        """GET /api/sessions/{id}/messages — transcript rows. The raw payload
+        carries hidden reasoning fields; SANITIZE here (plan §23: never render
+        hidden chain-of-thought) — only role/content/tool/timestamps survive."""
+        d = self._get(f"/api/sessions/{session_id}/messages")
+        rows = d.get("data") if isinstance(d, dict) else (d or [])
+        out = []
+        for m in (rows or [])[-limit:]:
+            if not isinstance(m, dict):
+                continue
+            out.append({
+                "role": str(m.get("role") or "unknown")[:16],
+                "content": str(m.get("content") or ""),
+                "tool_name": m.get("tool_name"),
+                "timestamp": m.get("timestamp"),
+            })
+        return out
+
+    def chat(self, session_id: str | None, message: str) -> dict:
+        """Send one human chat message: session-bound when a session exists
+        (steer semantics), else a NEW run via /v1/runs (send_work path)."""
+        if session_id:
+            return _post_json(
+                f"{self._t.base_url}/api/sessions/{session_id}/chat",
+                self._t.api_key, {"message": message},
+                headers={"X-Hermes-Session-Id": session_id})
+        return _post_json(f"{self._t.base_url}/v1/runs", self._t.api_key,
+                          {"input": [{"role": "user", "content": message}],
+                           "title": "[ACMS chat] operator message"})
+
+    def slash_commands(self) -> list[dict]:
+        """Advertised harness slash commands for autocomplete (§21).
+
+        Source-of-truth rule: read the harness capability metadata, NEVER a
+        hard-coded Hermes-only list. Hermes 0.19.0 exposes no /v1/commands
+        machine list, so ACMS offers the harness-verified command set from
+        docs/HARNESS_CONTROL_MAPPING.md probes + the registry names, marked
+        with their source. Unknown/other harnesses → /help only (honest)."""
+        try:
+            caps = self.fetch_capabilities()
+        except BridgeError:
+            return [{"command": "/help", "args": "", "description":
+                     "Show available commands (harness capabilities unavailable)"}]
+        cmds = [{"command": "/help", "args": "",
+                 "description": "Show available commands"},
+                {"command": "/status", "args": "",
+                 "description": "Show session, model, token, and context info"},
+                {"command": "/model", "args": "[model] [--session]",
+                 "description": "Switch model (persists by default)"},
+                {"command": "/new", "args": "[name]",
+                 "description": "Start a new session (fresh session ID + history)"},
+                {"command": "/usage", "args": "",
+                 "description": "Show token usage for the current session"},
+                {"command": "/sessions", "args": "",
+                 "description": "Browse and resume previous sessions"},
+                {"command": "/title", "args": "[name]",
+                 "description": "Set a title for the current session"}]
+        if caps.get("features", {}).get("session_chat"):
+            cmds.append({"command": "/steer", "args": "<prompt>",
+                         "description": "Inject a message after the next tool call"})
+        return cmds
+
     # ---------------------------------------------------------------- helpers
 
     def _get(self, path: str) -> dict:

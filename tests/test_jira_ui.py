@@ -101,16 +101,19 @@ def test_work_list_shows_jira_column_and_button(gate_env, monkeypatch):
 
 
 def test_work_board_renders_columns(gate_env, monkeypatch):
-    """§6.3: board columns render; cards show real facts only."""
+    """§6.3/§12: kanban columns render; cards show real facts only.
+    STEA-004 Phase C renamed columns (attention/terminal) and card link text
+    (Work UID primary); Jira linkage stays visibly separate."""
     cookies = _login_admin(monkeypatch)
     r = client.post("/api/v1/work/items", headers={"Authorization": "Bearer test-token"},
                     json={"kind": "task", "title": "board card probe"})
     wid = r.json()["work_item_id"]
     page = client.get("/ui/work/board", cookies=cookies)
     assert page.status_code == 200
-    assert "Planned" in page.text and "Active" in page.text and "Completed" in page.text
+    assert "Planned" in page.text and "Running" in page.text \
+        and "Human attention / blocked" in page.text and "Complete / failed" in page.text
     assert "board card probe" in page.text
-    assert "awaiting jira" in page.text  # unlinked = visibly non-executable
+    assert "no jira link" in page.text  # unlinked = visibly non-executable
 
 
 async def test_usage_page_renders_honest_nulls(gate_env, monkeypatch):

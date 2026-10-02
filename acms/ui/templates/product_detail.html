@@ -1,0 +1,140 @@
+{% extends "base.html" %}
+{% block title %}{{ product.name }} — ACMS{% endblock %}
+{% block content %}
+<p><a href="/ui/products">&larr; Products</a></p>
+<h1>{{ product.name }} <span class="badge">{{ product.status }}</span></h1>
+{% if product.business_summary %}<p class="muted">{{ product.business_summary }}</p>{% endif %}
+{% if error %}<section class="notice warn"><p>{{ error }}</p></section>{% endif %}
+
+<section class="cards">
+  <div class="card"><h2>Projects</h2><p class="big">{{ projects|length }}</p></div>
+  <div class="card"><h2>Repositories</h2><p class="big">{{ repos|length }}</p></div>
+  <div class="card"><h2>True Slop</h2>
+    <p class="big">{% if slop and slop.true_slop_ratio is not none %}{{ '%.1f'|format(slop.true_slop_ratio) }}{% else %}—{% endif %}</p>
+    <p class="muted">LOC / human ADRs</p></div>
+  <div class="card"><h2>Precision Slop</h2>
+    <p class="big">{% if slop and slop.precision_slop_ratio is not none %}{{ '%.1f'|format(slop.precision_slop_ratio) }}{% else %}—{% endif %}</p>
+    <p class="muted">LOC / total ADRs</p></div>
+  <div class="card"><h2>Tokens (sessions)</h2><p class="big">{{ usage.tokens }}</p>
+    <p class="muted">{{ usage.sessions }} execution session{{ '' if usage.sessions == 1 else 's' }}</p></div>
+</section>
+
+<section class="panel">
+  <h2>Projects under this product</h2>
+  {% if projects %}
+  <table class="data">
+    <thead><tr><th>Project</th><th>Jira project</th><th>Work items</th><th>Open</th></tr></thead>
+    <tbody>
+      {% for pr in projects %}
+      <tr>
+        <td><strong>{{ pr.name }}</strong> <code class="muted">{{ pr.slug }}</code></td>
+        <td>{{ pr.jira_project_key or '—' }}</td>
+        <td>{{ pr.work_count }}</td>
+        <td>{{ pr.open_count }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted">No projects associated yet.</p>
+  {% endif %}
+  {% if is_admin %}
+  <p class="muted">Projects associate/disassociate via <a href="/ui/projects/new">Project creation</a> (product dropdown) — human correction stays authoritative (§14).</p>
+  {% endif %}
+</section>
+
+<section class="panel">
+  <h2>Repositories <span class="muted">· unique-source (§16): a repo counts once</span></h2>
+  {% if repos %}
+  <table class="data">
+    <thead><tr><th>Repository</th><th>Via</th><th>Branch</th><th>LOC</th><th>ADRs (human/total)</th><th>Measured</th><th>Snapshots</th><th></th></tr></thead>
+    <tbody>
+      {% for r in repos %}
+      <tr>
+        <td>{% if r.url %}<a href="{{ r.url }}">{{ r.slug }}</a>{% else %}{{ r.slug }}{% endif %}</td>
+        <td>{{ r.linked_via }}</td>
+        <td>{{ r.branch or '—' }}</td>
+        <td>{{ r.loc if r.loc is not none else '—' }}</td>
+        <td>{{ r.human_adr if r.human_adr is not none else '—' }} / {{ r.total_adr if r.total_adr is not none else '—' }}</td>
+        <td class="muted">{{ r.measured_str }}</td>
+        <td>{{ r.snapshots }}</td>
+        <td>
+          {% if is_admin %}
+          <form method="post" action="/ui/products/{{ product.product_id }}/repositories/{{ r.repository_id }}/refresh" class="inline-form">
+            <button type="submit" class="button-small">Refresh now</button>
+          </form>
+          <form method="post" action="/ui/products/{{ product.product_id }}/repositories/{{ r.repository_id }}/unlink" class="inline-form"
+                onsubmit="return confirm('Unlink {{ r.slug }} from this product?');">
+            <button type="submit">Unlink</button>
+          </form>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted">No repositories associated yet.</p>
+  {% endif %}
+  {% if is_admin %}
+  <details>
+    <summary>Associate a repository</summary>
+    <form method="post" action="/ui/products/{{ product.product_id }}/repositories/link" class="filter-form">
+      <label>Existing repo
+        <select name="repository_id">
+          <option value="">— or enter owner/repo —</option>
+          {% for r in all_repos %}<option value="{{ r.repository_id }}">{{ r.slug }}</option>{% endfor %}
+        </select>
+      </label>
+      <label>Owner <input name="owner" placeholder="startupteams"></label>
+      <label>Repo <input name="repo" placeholder="acms-project-framework"></label>
+      <button type="submit">Link</button>
+    </form>
+  </details>
+  {% endif %}
+</section>
+
+<section class="panel">
+  <h2>Slop Ratio history <span class="muted">· baseline collection, no thresholds (§16)</span></h2>
+  {% if history %}
+  <table class="data">
+    <thead><tr><th>Timestamp</th><th>LOC</th><th>Human ADRs</th><th>Total ADRs</th><th>True</th><th>Precision</th><th>Commit</th></tr></thead>
+    <tbody>
+      {% for h in history %}
+      <tr>
+        <td class="muted">{{ h.captured_at.strftime('%m-%d %H:%M') if h.captured_at }}</td>
+        <td>{{ h.loc if h.loc is not none else '—' }}</td>
+        <td>{{ h.human_written_adr_count if h.human_written_adr_count is not none else '—' }}</td>
+        <td>{{ h.total_adr_count if h.total_adr_count is not none else '—' }}</td>
+        <td>{% if h.true_slop_ratio is not none %}{{ '%.1f'|format(h.true_slop_ratio) }}{% else %}—{% endif %}</td>
+        <td>{% if h.precision_slop_ratio is not none %}{{ '%.1f'|format(h.precision_slop_ratio) }}{% else %}—{% endif %}</td>
+        <td><code>{{ (h.commit_sha or '')[:10] or '—' }}</code></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <p class="muted">Full timeseries: <code>GET /products/{{ product.product_id }}/slop-history</code>. Chart view renders from the same data when a chart lib is added.</p>
+  {% else %}
+  <p class="muted">No snapshots yet — associate a repository and use Refresh now.</p>
+  {% endif %}
+</section>
+
+<section class="panel">
+  <h2>Recent artifacts</h2>
+  {% if artifacts %}
+  <table class="data">
+    <thead><tr><th>Artifact UID</th><th>Title</th><th>Type</th><th>Created</th></tr></thead>
+    <tbody>
+      {% for a in artifacts %}
+      <tr>
+        <td><a href="/ui/artifacts/{{ a.artifact_uid }}"><code>{{ a.artifact_uid }}</code></a></td>
+        <td>{{ a.title }}</td><td>{{ a.type }}</td><td class="muted">{{ a.created_str }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted">No artifacts linked to this product yet.</p>
+  {% endif %}
+</section>
+{% endblock %}

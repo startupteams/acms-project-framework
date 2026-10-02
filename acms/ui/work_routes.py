@@ -77,6 +77,8 @@ async def _active_holds(db, work_item_id: str) -> list:
 def _view_item(record, parent_title: str | None = None) -> dict:
     return {
         "work_item_id": record.work_item_id,
+        # STEA-004 §6: human UID as primary link text, short key alongside
+        "work_uid": getattr(record, "work_uid", None),
         "work_key": getattr(record, "work_key", None),
         "parent_id": record.parent_id,
         "parent_title": parent_title,
@@ -138,13 +140,15 @@ async def work_board(
     user=Depends(current_user),
     db: AsyncSession = Depends(get_session),
 ):
-    """Operator board view (window-5 §6.3) — real facts only per card."""
-    from ..work_board import board_data
+    """Operator kanban (STEA-004 Phase C §12) — six columns incl. dispatching/
+    running/attention; UID as primary link text; Jira state separate."""
+    from .operator_data import kanban_data
 
-    data = await board_data(db)
+    data = await kanban_data(db)
     context = {
         "user": user,
         "columns": data["columns"],
+        "total": data["total"],
         "error": request.query_params.get("error"),
     }
     return _templates().TemplateResponse(request, "work_board.html", context)
@@ -228,6 +232,29 @@ async def work_detail(
     tasks = await work_service.list_execution_tasks(db, work_item_id)
     handoffs = await work_service.list_handoffs(db, work_item_id)
 
+    # Canonical handoff (STEA-004 §9): exactly ONE work_handoff artifact per
+    # terminal item — surfaced prominently on this page (§9 UI requirement).
+    canonical_handoff = None
+    from ..a2a_models import ArtifactRecord
+    from ..canonical_handoff import HANDOFF_TYPE
+
+    from sqlalchemy import select as _sel
+
+    ch = (await db.scalars(
+        _sel(ArtifactRecord)
+        .where(ArtifactRecord.work_item_id == work_item_id)
+        .where(ArtifactRecord.artifact_type == HANDOFF_TYPE)
+        .order_by(ArtifactRecord.created_at.desc()).limit(1))).first()
+    if ch is not None:
+        canonical_handoff = {
+            "artifact_id": ch.artifact_id,
+            "artifact_uid": ch.artifact_uid,
+            "title": ch.title,
+            "bluf": ch.bluf,
+            "created_str": ch.created_at.strftime("%Y-%m-%d %H:%M") if ch.created_at else "—",
+            "content": ch.content,
+        }
+
     # Budget panel (REQ-059): rollup + budget row (may be unset — show honestly).
     budget = await budget_service.get_budget(db, work_item_id)
     rollup = await budget_service.work_budget_rollup(db, work_item_id)
@@ -271,6 +298,8 @@ async def work_detail(
         "holds": (await _active_holds(db, work_item_id)),
         # window-5 §6.5: linked PRs with objective outcome states
         "prs": (await _work_prs(db, work_item_id)),
+        # STEA-004 §9: canonical Markdown handoff surfaced prominently
+        "canonical_handoff": canonical_handoff,
         "error": request.query_params.get("error"),
     }
     return _templates().TemplateResponse(request, "work_detail.html", context)

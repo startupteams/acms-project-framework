@@ -3,7 +3,7 @@
 {% block title %}ACMS Home{% endblock %}
 
 {% block content %}
-<h1>Fleet overview</h1>
+<h1>Operations</h1>
 
 <section class="cards">
   <div class="card">
@@ -12,66 +12,76 @@
     <p class="muted">build <code>{{ git_sha_short }}</code></p>
   </div>
   <div class="card">
-    <h2>App health</h2>
-    <p class="big ok">{{ app_health }}</p>
-  </div>
-  <div class="card">
-    <h2>Database health</h2>
-    <p class="big {% if db_health == 'ok' %}ok{% else %}warn{% endif %}">{{ db_health }}</p>
-  </div>
-  <div class="card">
-    <h2>Registered agents</h2>
-    <p class="big">{{ agent_count }}</p>
-    <p class="muted">{{ internal_count }} internal &middot; {{ external_count }} external</p>
+    <h2>App / DB health</h2>
+    <p class="big ok">ok / {% if db_health == 'ok' %}<span class="ok">ok</span>{% else %}<span class="warn">{{ db_health }}</span>{% endif %}</p>
   </div>
   <div class="card">
     <h2>Running</h2>
-    <p class="big {% if running_tasks %}ok{% endif %}">{{ fleet_counts.get('RUNNING', 0) }}</p>
-    <p class="muted">{{ running_tasks }} execution task{{ '' if running_tasks == 1 else 's' }}</p>
-  </div>
-  <div class="card">
-    <h2>Idle</h2>
-    <p class="big">{{ fleet_counts.get('IDLE', 0) }}</p>
-    <p class="muted">{% if dispatching_tasks %}{{ dispatching_tasks }} dispatching{% else %}no dispatches in flight{% endif %}</p>
-  </div>
-  <div class="card">
-    <h2>Stale</h2>
-    <p class="big {% if fleet_counts.get('STALE') %}warn{% endif %}">{{ fleet_counts.get('STALE', 0) }}</p>
-    <p class="muted">&gt; 5 min without contact</p>
-  </div>
-  <div class="card">
-    <h2>Offline</h2>
-    <p class="big">{{ fleet_counts.get('OFFLINE', 0) }}</p>
-    <p class="muted">unreachable</p>
+    <p class="big {% if work_now.running %}ok{% endif %}">{{ work_now.running|length }}</p>
+    <p class="muted">{% if work_now.dispatching %}{{ work_now.dispatching|length }} dispatching{% else %}none dispatching{% endif %}</p>
   </div>
   <div class="card">
     <h2>Needs human</h2>
-    <p class="big {% if needs_human %}warn{% endif %}">{{ needs_human }}</p>
+    <p class="big {% if attention.unread_action %}warn{% endif %}">{{ attention.unread_action }}</p>
     <p class="muted"><a href="/ui/inbox">open inbox</a></p>
   </div>
   <div class="card">
-    <h2>Artifacts</h2>
-    <p class="big">{{ artifact_count }}</p>
-    <p class="muted">stored handoffs</p>
+    <h2>Cloud cost today</h2>
+    <p class="big">${{ '%.4f'|format(health.cloud_cost_today) }}</p>
+    <p class="muted">actual (LiteLLM spend) · {{ health.sessions_today }} session{{ '' if health.sessions_today == 1 else 's' }} today</p>
+  </div>
+  <div class="card">
+    <h2>Facility power</h2>
+    {% if health.power and health.power.facility.current_watts is not none %}
+    <p class="big">{{ '%.0f'|format(health.power.facility.current_watts) }} W</p>
+    <p class="muted">24h {{ '%.1f'|format(health.power.facility.kwh_24h) }} kWh / ${{ '%.2f'|format(health.power.facility.cost_usd_24h) }} · <a href="/ui/usage">usage</a></p>
+    {% else %}
+    <p class="big warn">STALE</p>
+    <p class="muted">{% if health.power %}snapshot {{ health.power.captured_at.strftime('%m-%d %H:%M') if health.power.captured_at }}{% if health.power.facility.incomplete_reason %} — {{ health.power.facility.incomplete_reason }}{% endif %}{% else %}no snapshot yet{% endif %} — never shown as 0</p>
+    {% endif %}
   </div>
 </section>
 
 <section class="panel">
-  <h2>Agents</h2>
-  {% if agent_cards %}
-  <table>
-    <thead>
-      <tr><th>Agent</th><th>Status</th><th>Last contact</th><th>Current session</th><th>Model</th><th>Context</th></tr>
-    </thead>
+  <h2>Work now <span class="muted">·</span> <a href="/ui/work/board">open kanban</a></h2>
+  {% if work_now.running or work_now.dispatching %}
+  <table class="data">
+    <thead><tr><th>Work</th><th>Phase</th><th>Model</th><th>Started</th></tr></thead>
     <tbody>
-      {% for c in agent_cards %}
+      {% for t in work_now.dispatching %}
+      <tr><td><a href="/ui/execution/{{ t.task_id }}">{{ t.work_label }}</a></td>
+          <td><span class="badge">dispatching</span></td><td>{{ t.model or '—' }}</td><td>{{ t.started_str or '—' }}</td></tr>
+      {% endfor %}
+      {% for t in work_now.running %}
+      <tr><td><a href="/ui/execution/{{ t.task_id }}">{{ t.work_label }}</a></td>
+          <td><span class="badge">RUNNING</span></td><td>{{ t.model or '—' }}</td><td>{{ t.started_str or '—' }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted">No execution in flight right now.</p>
+  {% endif %}
+  <p class="muted">
+    {% if work_now.in_review %}{{ work_now.in_review|length }} in review{% else %}nothing in review{% endif %} ·
+    {% if work_now.blocked %}<span class="warn">{{ work_now.blocked|length }} blocked</span>{% else %}nothing blocked{% endif %} ·
+    recent completions: {{ work_now.recent|length }}
+  </p>
+</section>
+
+<section class="panel">
+  <h2>Agent fleet <span class="muted">·</span> <a href="/ui/agents">fleet table</a></h2>
+  {% if fleet %}
+  <table class="data">
+    <thead><tr><th>Agent</th><th>State</th><th>Model</th><th>Current work</th><th>Last contact</th></tr></thead>
+    <tbody>
+      {% for a in fleet %}
       <tr>
-        <td><a href="/ui/agents/{{ c.agent_id }}">{{ c.name }}</a></td>
-        <td><span class="badge">{{ c.state }}</span></td>
-        <td>{% if c.last_contact %}{{ c.last_contact.strftime('%m-%d %H:%M') }} UTC{% else %}&mdash;{% endif %}</td>
-        <td>{{ c.session_title or '&mdash;' }}</td>
-        <td>{{ c.model_id or '&mdash;' }}</td>
-        <td>{% if c.context_util is not none %}{{ c.context_util }}%{% else %}&mdash;{% endif %}</td>
+        <td><a href="/ui/agents/{{ a.agent_id }}">{{ a.name }}</a>
+            {% if a.worker_uid %}<code class="muted">uid-{{ a.worker_uid }}</code>{% endif %}</td>
+        <td><span class="badge">{{ a.state }}</span></td>
+        <td>{{ a.model or '—' }}</td>
+        <td>{{ a.session_title or '—' }}</td>
+        <td>{{ a.last_contact_str or '—' }}</td>
       </tr>
       {% endfor %}
     </tbody>
@@ -81,13 +91,36 @@
   {% endif %}
 </section>
 
-{% if not_implemented %}
 <section class="panel">
-  <h2>Not yet implemented</h2>
-  <p>The backend does not yet maintain the following fleet fields, so they are not shown here:</p>
-  <ul>
-    {% for item in not_implemented %}<li>{{ item }}</li>{% endfor %}
-  </ul>
+  <h2>Human attention <span class="muted">·</span> <a href="/ui/attention">event feed</a></h2>
+  <p class="muted">
+    Unread Action Required: <strong>{{ attention.unread_action }}</strong> ·
+    Unread FYI: <strong>{{ attention.unread_fyi }}</strong>
+    {% if attention.oldest %} · oldest waiting: <a href="/ui/inbox/{{ attention.oldest.item_id }}">{{ attention.oldest.title[:80] }}</a> ({{ attention.oldest.age_str }}){% endif %}
+  </p>
+</section>
+
+{% if slop_cards %}
+<section class="panel">
+  <h2>Product Slop Ratios <span class="muted">· baseline collection, no thresholds yet (§16)</span></h2>
+  <table class="data">
+    <thead><tr><th>Product</th><th>True Slop</th><th>Precision Slop</th><th>LOC</th><th>Human ADRs</th><th>Total ADRs</th><th>Repos</th><th>Measured</th></tr></thead>
+    <tbody>
+      {% for p in slop_cards %}
+      <tr>
+        <td><a href="/ui/products/{{ p.product_id }}">{{ p.name }}</a></td>
+        <td>{% if p.true_slop_ratio is not none %}{{ '%.1f'|format(p.true_slop_ratio) }}{% else %}—{% endif %}</td>
+        <td>{% if p.precision_slop_ratio is not none %}{{ '%.1f'|format(p.precision_slop_ratio) }}{% else %}—{% endif %}</td>
+        <td>{{ p.loc if p.loc is not none else '—' }}</td>
+        <td>{{ p.human_adr if p.human_adr is not none else '—' }}</td>
+        <td>{{ p.total_adr if p.total_adr is not none else '—' }}</td>
+        <td>{{ p.repo_count }}</td>
+        <td class="muted">{{ p.last_measured_str or 'never' }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <p class="muted">True = LOC / human-written ADRs · Precision = LOC / total ADRs. Baseline history first — no good/bad thresholds (§16).</p>
 </section>
 {% endif %}
 {% endblock %}

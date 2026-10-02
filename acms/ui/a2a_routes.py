@@ -10,7 +10,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import RedirectResponse
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..a2a_models import (
@@ -63,7 +63,9 @@ async def ui_inbox(
     items = [{
         "item_id": r.item_id, "item_class": r.item_class, "severity": r.severity,
         "title": r.title, "summary": r.summary, "read": r.read_at is not None,
-        "work_item_id": r.work_item_id, "jira_issue_key": r.jira_issue_key,
+        "work_item_id": r.work_item_id,
+        "work_uid": getattr(r, "work_uid", None),
+        "jira_issue_key": r.jira_issue_key,
         "created": r.created_at.strftime("%m-%d %H:%M") if r.created_at else "",
         "archived": r.archived_at is not None,
     } for r in rows]
@@ -95,18 +97,45 @@ async def ui_inbox_detail(
     except (TypeError, ValueError):
         meta = {}
     work = await db.get(WorkItemRecord, rec.work_item_id) if rec.work_item_id else None
+    # Previous / next navigation within the current inbox ordering (§25)
+    from ..inbox_service import list_inbox
+
+    all_rows = await list_inbox(db)
+    ids = [r.item_id for r in all_rows]
+    idx = ids.index(item_id) if item_id in ids else None
+    prev_id = ids[idx + 1] if idx is not None and idx + 1 < len(ids) else None
+    next_id = ids[idx - 1] if idx is not None and idx > 0 else None
+    # linked work UID (canonical link text §6) + linked artifact when present
+    work_uid = None
+    if work is not None:
+        work_uid = getattr(work, "work_uid", None) or work.work_key
+    linked_artifact = None
+    if rec.work_item_id:
+        from sqlalchemy import select as _sel
+
+        from ..a2a_models import ArtifactRecord as _AR
+
+        la = (await db.scalars(
+            _sel(_AR).where(_AR.work_item_id == rec.work_item_id)
+            .where(_AR.artifact_type.in_(("work_handoff", "handoff")))
+            .order_by(_AR.created_at.desc()).limit(1))).first()
+        if la is not None:
+            linked_artifact = {"artifact_uid": la.artifact_uid or la.artifact_id,
+                               "title": la.title}
     context = _base_context(user) | {
         "item": {
             "item_id": rec.item_id, "item_class": rec.item_class,
             "severity": rec.severity, "title": rec.title, "summary": rec.summary,
             "read": rec.read_at is not None, "archived": rec.archived_at is not None,
-            "work_item_id": rec.work_item_id, "agent_id": rec.agent_id,
+            "work_item_id": rec.work_item_id, "work_uid": work_uid, "agent_id": rec.agent_id,
             "jira_issue_key": rec.jira_issue_key,
             "created": rec.created_at.strftime("%m-%d %H:%M") if rec.created_at else "",
             "metadata": meta,
         },
         "work": {"title": work.title, "status": work.status,
                  "work_key": work.work_key} if work else None,
+        "prev_id": prev_id, "next_id": next_id,
+        "linked_artifact": linked_artifact,
     }
     return templates.TemplateResponse(request, "inbox_detail.html", context)
 
@@ -257,17 +286,82 @@ async def ui_inbox_context(item_id: str, user=Depends(current_user),
 
 @router.get("/artifacts")
 async def ui_artifacts(request: Request, user=Depends(current_user),
-                       db: AsyncSession = Depends(get_session)):
-    rows = (await db.scalars(
-        select(ArtifactRecord).order_by(ArtifactRecord.created_at.desc()).limit(100))).all()
+                       db: AsyncSession = Depends(get_session),
+                       q: str | None = None, sort: str = "created",
+                       direction: str = "desc",
+                       artifact_type: str | None = None):
+    """Artifact list (STEA-004 Phase C §26): sortable + searchable.
+    Search keys (§26): UID, UUID, short hash, full sha256/prefix, title, Jira,
+    Work UID, agent, project, product."""
+    from ..a2a_models import ProjectRecord
+    from ..work_models import WorkItemRecord
+
+    stmt = select(ArtifactRecord)
+    if q and q.strip():
+        like = f"%{q.strip()}%"
+        stmt = stmt.where(
+            ArtifactRecord.artifact_uid.ilike(like)
+            | ArtifactRecord.artifact_id.ilike(like)
+            | ArtifactRecord.title.ilike(like)
+            | ArtifactRecord.sha256.ilike(like)
+            | ArtifactRecord.jira_issue_key.ilike(like)
+            | ArtifactRecord.work_item_id.ilike(like)
+            | ArtifactRecord.agent_id.ilike(like))
+    if artifact_type:
+        stmt = stmt.where(ArtifactRecord.artifact_type == artifact_type)
+    sort_cols = {
+        "created": ArtifactRecord.created_at,
+        "title": ArtifactRecord.title,
+        "uid": ArtifactRecord.artifact_uid,
+        "type": ArtifactRecord.artifact_type,
+        "size": func.length(ArtifactRecord.content),
+    }
+    col = sort_cols.get(sort, ArtifactRecord.created_at)
+    stmt = stmt.order_by(col.desc() if direction != "asc" else col.asc()).limit(200)
+    rows = (await db.scalars(stmt)).all()
+    # resolve labels for linked entities
+    work_ids = {r.work_item_id for r in rows if r.work_item_id}
+    proj_ids = {r.project_id for r in rows if r.project_id}
+    prod_ids = {r.product_id for r in rows if r.product_id}
+    agent_ids = {r.agent_id for r in rows if r.agent_id}
+    work_labels, proj_labels, prod_labels, agent_labels = {}, {}, {}, {}
+    if work_ids:
+        for r2 in (await db.scalars(select(WorkItemRecord.work_item_id, WorkItemRecord.work_uid)
+                                    .where(WorkItemRecord.work_item_id.in_(work_ids)))).all():
+            work_labels[r2[0]] = r2[1]
+    if proj_ids:
+        for p in (await db.scalars(select(ProjectRecord))):
+            if p.project_id in proj_ids:
+                proj_labels[p.project_id] = p.name
+    if prod_ids or proj_ids:
+        from ..a2a_models import ProductRecord
+
+        for p in (await db.scalars(select(ProductRecord))):
+            prod_labels[p.product_id] = p.name
+    if agent_ids:
+        from ..models import AgentRecord
+
+        for a2 in (await db.scalars(select(AgentRecord))):
+            agent_labels[a2.agent_id] = a2.display_name
     items = [{
-        "artifact_id": r.artifact_id, "title": r.title, "bluf": r.bluf,
+        "artifact_id": r.artifact_id, "artifact_uid": r.artifact_uid,
+        "title": r.title, "bluf": r.bluf,
         "artifact_type": r.artifact_type, "jira_issue_key": r.jira_issue_key,
-        "work_item_id": r.work_item_id,
+        "work_item_id": r.work_item_id, "work_uid": work_labels.get(r.work_item_id),
+        "project": proj_labels.get(r.project_id), "product": prod_labels.get(r.product_id),
+        "agent": agent_labels.get(r.agent_id),
         "created": r.created_at.strftime("%m-%d %H:%M") if r.created_at else "",
+        "sha": r.sha256,
         "size": len(r.content or ""),
     } for r in rows]
-    context = _base_context(user) | {"items": items}
+    types = sorted({t for t in (await db.scalars(
+        select(ArtifactRecord.artifact_type).distinct()))})
+    types = [t for t in types if t]
+    context = _base_context(user) | {
+        "items": items, "q": q or "", "sort": sort, "direction": direction,
+        "artifact_type": artifact_type or "", "types": types,
+        "next_dir": "asc" if direction == "desc" else "desc",
+    }
     return templates.TemplateResponse(request, "artifacts.html", context)
 
 
@@ -278,11 +372,39 @@ async def ui_artifact_detail(request: Request, artifact_id: str,
     rec = await _resolve_artifact(db, artifact_id)
     if rec is None:
         return RedirectResponse("/ui/artifacts", status_code=303)
+    # Linked-entity labels (§8 detail fields)
+    work_uid = None
+    if rec.work_item_id:
+        from ..work_models import WorkItemRecord
+
+        w = await db.get(WorkItemRecord, rec.work_item_id)
+        work_uid = (getattr(w, "work_uid", None) or w.work_key) if w else None
+    project = product = agent = None
+    if rec.project_id:
+        from ..a2a_models import ProjectRecord
+
+        p = await db.get(ProjectRecord, rec.project_id)
+        project = p.name if p else None
+    if rec.product_id:
+        from ..a2a_models import ProductRecord
+
+        p = await db.get(ProductRecord, rec.product_id)
+        product = p.name if p else None
+    if rec.agent_id:
+        from ..models import AgentRecord
+
+        a2 = await db.get(AgentRecord, rec.agent_id)
+        agent = a2.display_name if a2 else None
     context = _base_context(user) | {
         "a": {"artifact_id": rec.artifact_id, "artifact_uid": rec.artifact_uid,
               "title": rec.title, "bluf": rec.bluf,
               "content": rec.content, "sha256": rec.sha256,
               "jira_issue_key": rec.jira_issue_key, "work_item_id": rec.work_item_id,
+              "work_uid": work_uid,
+              "project": project, "project_id": rec.project_id,
+              "product": product, "product_id": rec.product_id,
+              "agent": agent, "agent_id": rec.agent_id,
+              "size": len(rec.content or ""),
               "created_by": rec.created_by,
               "created": rec.created_at.strftime("%m-%d %H:%M") if rec.created_at else ""},
     }

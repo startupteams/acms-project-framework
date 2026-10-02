@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% block title %}Search — ACMS{% endblock %}
+{% block content %}
+<h1>Search anything</h1>
+<form method="get" action="/ui/search" class="filter-form">
+  <label>Query <input name="q" value="{{ q }}" placeholder="Work UID, artifact UID/hash, agent, project, product, Jira key…"></label>
+  <button type="submit">Search</button>
+</form>
+
+{% if error %}<section class="notice warn"><p>Search failed: {{ error }}</p></section>{% endif %}
+
+{% if results %}
+  {% set groups = [('work','Work'), ('artifacts','Artifacts'), ('agents','Agents'),
+                   ('projects','Projects'), ('products','Products'), ('inbox','Inbox')] %}
+  {% for key, label in groups %}
+    {% set rows = results.get(key) or [] %}
+    {% if rows %}
+    <section class="panel">
+      <h2>{{ label }} ({{ rows|length }})</h2>
+      <table class="data">
+        <tbody>
+        {% if key == 'work' %}
+          {% for r in rows %}
+          <tr><td><a href="/ui/work/{{ r.work_item_id }}"><code>{{ r.work_uid or r.title[:40] }}</code></a></td>
+              <td>{{ r.title }}</td><td><span class="status status-{{ r.status }}">{{ r.status }}</span></td></tr>
+          {% endfor %}
+        {% elif key == 'artifacts' %}
+          {% for r in rows %}
+          <tr><td><a href="/ui/artifacts/{{ r.artifact_uid or r.artifact_id }}"><code>{{ r.artifact_uid or r.artifact_id[:8] }}</code></a></td>
+              <td>{{ r.title }}</td><td>{{ r.artifact_type }}</td></tr>
+          {% endfor %}
+        {% elif key == 'agents' %}
+          {% for r in rows %}
+          <tr><td><a href="/ui/agents/{{ r.agent_id }}">{{ r.display_name }}</a></td>
+              <td>{% if r.worker_uid %}<code>uid-{{ r.worker_uid }}</code>{% endif %}</td></tr>
+          {% endfor %}
+        {% elif key == 'projects' %}
+          {% for r in rows %}
+          <tr><td>{{ r.name }} <code class="muted">{{ r.slug }}</code></td></tr>
+          {% endfor %}
+        {% elif key == 'products' %}
+          {% for r in rows %}
+          <tr><td><a href="/ui/products/{{ r.product_id }}">{{ r.name }}</a> <code class="muted">{{ r.slug }}</code></td></tr>
+          {% endfor %}
+        {% elif key == 'inbox' %}
+          {% for r in rows %}
+          <tr><td><a href="/ui/inbox/{{ r.item_id }}">{{ r.title }}</a></td><td>{{ r.item_class }}</td></tr>
+          {% endfor %}
+        {% endif %}
+        </tbody>
+      </table>
+    </section>
+    {% endif %}
+  {% endfor %}
+  {% if not (results.get('work') or results.get('artifacts') or results.get('agents') or results.get('projects') or results.get('products') or results.get('inbox')) %}
+  <p class="muted">No matches for “{{ q }}”.</p>
+  {% endif %}
+{% elif q %}
+  <p class="muted">Enter at least 2 characters.</p>
+{% else %}
+  <p class="muted">Search covers Work items, artifacts (UID/UUID/sha256), agents, projects, products, Jira keys, and inbox items (§27 phase 1 — structured; semantic search deferred).</p>
+{% endif %}
+{% endblock %}

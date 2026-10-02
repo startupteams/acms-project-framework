@@ -72,11 +72,12 @@
 {% if items %}
 <table class="data">
   <thead>
-    <tr><th>Title</th><th>Kind</th><th>Status</th><th>Parent</th><th>Jira</th><th>Created by</th><th>Updated</th></tr>
+    <tr><th>Work UID</th><th>Title</th><th>Kind</th><th>Status</th><th>Parent</th><th>Jira</th><th>Created by</th><th>Updated</th></tr>
   </thead>
   <tbody>
     {% for i in items %}
     <tr>
+      <td><a href="/ui/work/{{ i.work_item_id }}"><code>{{ i.work_uid or i.work_key or i.work_item_id[:8] }}</code></a></td>
       <td><a href="/ui/work/{{ i.work_item_id }}">{{ i.title }}</a></td>
       <td><span class="{{ 'badge badge-' ~ i.kind }}">{{ i.kind }}</span></td>
       <td><span class="status status-{{ i.status }}">{{ i.status }}</span></td>
