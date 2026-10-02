@@ -758,6 +758,26 @@ An explicitly eligible Jira issue (dedicated AI assignee plus configured ready s
 
 **Provenance:** Human-Directed (STEA-004 Jira Workflow Recovery and Internal MCP Gateway plan, 2026-10-02).
 
+### ACMS-REQ-064 - Internal MCP gateway (additive, agent-facing)
+
+**Sprint Priority:** 1
+
+**Requirement**
+
+ACMS shall be complemented by an internal MCP gateway (`miam-mcp-gateway`, hosted on VM114) that exposes domain capabilities to internal managed agents as MCP resources/tools over a single logical endpoint, without replacing or bypassing REST, A2A, or SSE. The gateway authenticates agent-scoped and assignment-scoped tokens, enforces roles/scopes/risk classes, records a durable activity log, and fails closed. Window 1 delivers the gateway shell plus the ACMS adapter only.
+
+**Acceptance criteria**
+
+- The gateway is a logically separate service on VM114; its failure does not affect ACMS REST/A2A/SSE, LLM Manager, or PDU Manager.
+- Every MCP request requires a valid agent or assignment bearer token; unknown/expired/revoked tokens fail closed with distinct error types and are audited.
+- Tool capabilities carry risk classes (READ/SAFE_WRITE/SENSITIVE_WRITE/DESTRUCTIVE); DESTRUCTIVE is denied at the gateway in Window 1 for all callers; SENSITIVE_WRITE requires executive/infrastructure-admin roles.
+- A worker can read its own Work Item, current assignment, project, artifacts, inbox, policy snapshot, and assignment context manifest via `acms.*` resources; it cannot read or write outside its assignment scope (assignment-scoped tokens are bound to exactly one Work UID).
+- A worker can record progress notes, mark work blocked, create artifacts, submit handoffs, raise inbox items, and request review for its OWN active assignment only; worker administration of other workers is denied.
+- Arguments are stored hashed (never raw), tokens are never stored or logged in raw form, and every call (ok/denied/error) lands in the durable MCP activity log.
+- The assignment context manifest (`mcp://acms/context/current`) exposes agent/assignment/project/repositories/required-context pointers per the approved plan §14 — pointers, not document dumps.
+
+**Provenance:** Human-Directed (STEA-004 Jira Workflow Recovery and Internal MCP Gateway plan §9–§20, 2026-10-02; Window 1 scope).
+
 ---
 
 ## Feature Set: Security and External-Agent Isolation

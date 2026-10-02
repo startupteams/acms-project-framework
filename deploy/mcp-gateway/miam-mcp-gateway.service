@@ -1,0 +1,27 @@
+# /etc/systemd/system/miam-mcp-gateway.service
+# MIAM MCP Gateway (Window 1) — thin internal gateway, VM114.
+# Install: cp to /etc/systemd/system/, systemctl daemon-reload, enable --now.
+# Env: /etc/miam-mcp-gateway/env (0600 root) — NEVER commit real values.
+[Unit]
+Description=MIAM MCP Gateway (internal agent MCP endpoint)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+EnvironmentFile=/etc/miam-mcp-gateway/env
+WorkingDirectory=/opt/mcp-gateway/repo
+Environment=PYTHONPATH=/opt/mcp-gateway/repo
+ExecStart=/usr/bin/python3 -m mcp_gateway.cli serve
+Restart=on-failure
+RestartSec=5
+# Hardening
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/miam-mcp-gateway
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target
