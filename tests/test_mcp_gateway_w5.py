@@ -45,6 +45,9 @@ class FakePowerClient(PowerClient):
         ]}
 
     def pdu_outlet_status(self, pdu_key: str, outlet: int):
+        if pdu_key == "MIAM-XXXX":
+            # exercise the real adapter 404 path (NotFoundError branch)
+            return super().pdu_outlet_status(pdu_key, outlet)
         return {"pdu": pdu_key, "outlet": outlet, "state": "ON",
                 "notes": "read-only surface"}
 
