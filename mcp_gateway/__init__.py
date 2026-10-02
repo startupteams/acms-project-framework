@@ -11,6 +11,6 @@ risk classes §16, roles §17, tokens §12/§13, context manifest §14).
 """
 from __future__ import annotations
 
-__version__ = "0.1.0"
+__version__ = "0.3.0"
 
 GATEWAY_NAME = "miam-mcp-gateway"
