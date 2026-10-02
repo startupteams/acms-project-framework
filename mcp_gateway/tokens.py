@@ -144,12 +144,18 @@ class TokenStore:
     ) -> tuple[AgentTokenRecord, str]:
         raw = new_raw_token("mcp")
         now = utcnow()
+        # W2: every agent token carries the full declared capability-domain
+        # scopes (acms.* + llm.* + runtime.*). Domain AUTHORITY stays with the
+        # domain services; risk classes + roles gate the dangerous paths (the
+        # per-scope split was over-narrow: llm.read is read-only metadata).
+        default_scopes = ["acms.read", "acms.write", "llm.read", "llm.write",
+                          "runtime.write"]
         rec = AgentTokenRecord(
             token_hash=_hash(raw),
             agent_name=agent_name,
             acms_agent_id=acms_agent_id,
             roles=roles or ["worker"],
-            scopes=scopes or ["acms.read", "acms.write"],
+            scopes=scopes or default_scopes,
             created_at=now,
             expires_at=now + timedelta(days=ttl_days) if ttl_days is not None else None,
             source_ip_allowlist=source_ip_allowlist or [],
@@ -275,6 +281,29 @@ class TokenStore:
                 (_iso(utcnow()), reason, token_id),
             )
         return cur.rowcount > 0
+
+    def grant_agent_scopes(self, agent_name: str, scopes: list[str]) -> int:
+        """UNION new scopes into every ACTIVE token of the agent (W2 migration
+        path for pre-W2 tokens). Returns rows updated. Hash-only store is
+        untouched — scopes are metadata, not credentials."""
+        if not scopes:
+            return 0
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT token_id, scopes_json FROM agent_tokens "
+                "WHERE agent_name=? AND revoked_at IS NULL", (agent_name,)
+            ).fetchall()
+        updated = 0
+        for row in rows:
+            current = set(_parse(row["scopes_json"]))
+            merged = json.dumps(sorted(current | set(scopes)))
+            with self._lock, self._conn:
+                cur = self._conn.execute(
+                    "UPDATE agent_tokens SET scopes_json=? WHERE token_id=?",
+                    (merged, row["token_id"]),
+                )
+            updated += cur.rowcount
+        return updated
 
     def revoke_assignment_token(self, token_id: str, reason: str) -> bool:
         with self._lock, self._conn:
