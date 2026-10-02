@@ -153,6 +153,16 @@ def cmd_revoke(args) -> int:
     return 0 if ok else 1
 
 
+def cmd_grant_scopes(args) -> int:
+    """W2 migration path: union scopes into every ACTIVE token of an agent."""
+    cfg = _config_from_env()
+    store = TokenStore(cfg.tokens_path)
+    scopes = [s.strip() for s in args.scopes.split(",") if s.strip()]
+    n = store.grant_agent_scopes(args.agent_name, scopes)
+    print(json.dumps({"agent_name": args.agent_name, "scopes": scopes, "tokens_updated": n}))
+    return 0 if n else 1
+
+
 def cmd_activity(args) -> int:
     cfg = _config_from_env()
     audit = AuditLog(cfg.audit_path)
@@ -217,6 +227,11 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("token_id")
     p.add_argument("reason")
     p.set_defaults(fn=cmd_revoke)
+
+    p = sub.add_parser("grant-scopes", help="union scopes into every ACTIVE token of an agent (W2)")
+    p.add_argument("agent_name")
+    p.add_argument("scopes", help="comma-separated scope names, e.g. llm.read,llm.write,runtime.write")
+    p.set_defaults(fn=cmd_grant_scopes)
 
     p = sub.add_parser("activity", help="show recent MCP activity")
     p.add_argument("--limit", type=int, default=20)

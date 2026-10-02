@@ -943,7 +943,7 @@ class GatewayServer:
             models = body.get("models", [])[:25]
             return {"window_hours": body.get("window_hours", 24), "models": models}
 
-        def r_runtime_self(uri_params, identity):
+        def r_runtime_self(identity):
             agent_id = _runtime_self_acms_id(identity)
             status, body = acms.request(
                 "GET", f"/api/v1/fleet/agents/{agent_id}/runtime")
@@ -951,7 +951,7 @@ class GatewayServer:
                 raise DomainUnavailableError(f"ACMS fleet runtime failed (HTTP {status})")
             return {"runtime": body}
 
-        def r_runtime_fleet(uri_params, identity):
+        def r_runtime_fleet(identity):
             if not identity.has_role("executive", "infrastructure_admin"):
                 raise OutOfScopeError("runtime.fleet requires executive/infrastructure_admin")
             runtimes = _require_llm().agent_runtimes()
