@@ -22,7 +22,9 @@ if [ ! -x "$REPO_DIR/.venv-mcp/bin/python" ]; then
 fi
 
 # unit file with the venv python
-sed "s|ExecStart=/usr/bin/python3|ExecStart=$REPO_DIR/.venv-mcp/bin/python|" \
+sed -e "s|ExecStart=/usr/bin/python3|ExecStart=$REPO_DIR/.venv-mcp/bin/python|" \
+  -e "s|WorkingDirectory=/opt/mcp-gateway/repo|WorkingDirectory=$REPO_DIR|" \
+  -e "s|Environment=PYTHONPATH=/opt/mcp-gateway/repo|Environment=PYTHONPATH=$REPO_DIR|" \
   "$REPO_DIR/deploy/mcp-gateway/miam-mcp-gateway.service" > /etc/systemd/system/miam-mcp-gateway.service
 
 [ -f "$ENV_FILE" ] || { echo "NOTE: $ENV_FILE missing — create it from env.example before first start"; }

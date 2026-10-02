@@ -11,6 +11,8 @@ Wants=network-online.target
 Type=simple
 User=root
 EnvironmentFile=/etc/miam-mcp-gateway/env
+WorkingDirectory=/opt/mcp-gateway/repo
+Environment=PYTHONPATH=/opt/mcp-gateway/repo
 ExecStart=/usr/bin/python3 -m mcp_gateway.cli serve
 Restart=on-failure
 RestartSec=5
