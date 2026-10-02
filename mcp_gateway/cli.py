@@ -58,6 +58,12 @@ def _config_from_env() -> GatewayConfig:
         jira_projects=os.environ.get("MCP_GATEWAY_JIRA_PROJECTS", ""),
         jira_status_mutation_enabled=(
             os.environ.get("MCP_GATEWAY_JIRA_STATUS_MUTATION_ENABLED", "0") == "1"),
+        # W7 (plan §29)
+        registry_base_url=os.environ.get("MCP_GATEWAY_REGISTRY_BASE_URL", ""),
+        registry_token=os.environ.get("MCP_GATEWAY_REGISTRY_TOKEN", ""),
+        kuma_url=os.environ.get("MCP_GATEWAY_KUMA_URL", ""),
+        kuma_user=os.environ.get("MCP_GATEWAY_KUMA_USER", ""),
+        kuma_pass=os.environ.get("MCP_GATEWAY_KUMA_PASS", ""),
     )
 
 

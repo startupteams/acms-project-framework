@@ -150,7 +150,8 @@ class TokenStore:
         # per-scope split was over-narrow: llm.read is read-only metadata).
         default_scopes = ["acms.read", "acms.write", "llm.read", "llm.write",
                           "runtime.write", "proxmox.write", "power.read",
-                          "jira.read", "jira.write"]
+                          "jira.read", "jira.write", "registry.read",
+                          "monitoring.read"]
         rec = AgentTokenRecord(
             token_hash=_hash(raw),
             agent_name=agent_name,
