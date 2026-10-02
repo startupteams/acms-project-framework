@@ -284,12 +284,15 @@ class JiraClient:
                     "content": [{"type": "text", "text": "\n".join(code_lines)}],
                 })
                 continue
-            # headings: # .. ####
+            # headings: # .. #### — ADF heading node: type "heading" +
+            # attrs.level (NOT "heading2"-style types; Jira 400s INVALID_INPUT
+            # on those — hit live 2026-10-02 when the STNA-88 BLUF 400'd).
             m = _re.match(r"^(#{1,6})\s+(.*)$", stripped)
             if m:
                 level = min(len(m.group(1)), 6)
                 content.append({
-                    "type": f"heading{level}" if level > 3 else {1: "heading1", 2: "heading2", 3: "heading3"}[level],
+                    "type": "heading",
+                    "attrs": {"level": level},
                     "content": [{"type": "text", "text": m.group(2)}],
                 })
                 i += 1

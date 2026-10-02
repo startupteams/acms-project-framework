@@ -269,3 +269,25 @@ def test_jira_start_writeback_failure_does_not_break_started_dispatch(db, monkey
             assert link.last_generation_started_at is not None
 
     asyncio.run(scenario())
+
+
+# ------------------------------------------------- ADF heading node (live 400 fix)
+
+def test_adf_heading_nodes_are_valid_adf_heading_type():
+    """Live 2026-10-02: _markdown_to_adf emitted type "heading2" (invalid ADF
+    node — Jira Cloud 400s INVALID_INPUT) so the STNA-88 BLUF never posted.
+    ADF headings are type "heading" + attrs.level."""
+    from acms.jira_client import JiraClient
+
+    adf = JiraClient._markdown_to_adf(
+        "## BLUF\n\nACMS execution **succeeded**.\n\n- **Artifact UID:** `X`\n")
+    types = [n.get("type") for n in adf.get("content", [])]
+    assert "heading2" not in types and "heading1" not in types and "heading3" not in types
+    heading = next(n for n in adf["content"] if n.get("type") == "heading")
+    assert heading["attrs"]["level"] == 2
+    assert heading["content"][0]["text"] == "BLUF"
+    # every level 1..6 maps to the same node type
+    for lvl in range(1, 7):
+        doc = JiraClient._markdown_to_adf("#" * lvl + " Title")
+        node = doc["content"][0]
+        assert node["type"] == "heading" and node["attrs"]["level"] == lvl
