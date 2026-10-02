@@ -163,8 +163,8 @@ def _arm_grant(server, agent_name, capability):
 
 def test_sandbox_name_shape():
     n = sandbox_name("acms-hermes-worker-uid-005", "ACMS-WORK-000042-20261002_010203")
-    assert n == "sbx-acms-work-000042-20261002_010203-acms-hermes-worker-uid-005"
-    assert len(n) <= 63 and " " not in n and "/" not in n
+    assert n == "sbx-acms-work-000042-20261002-010203-acms-hermes-worker-uid-005"
+    assert len(n) <= 63 and " " not in n and "/" not in n and "_" not in n
 
 
 def test_domain_absent_when_sm_unconfigured(tmp_path):
@@ -271,7 +271,7 @@ def test_foreign_sandbox_not_reachable(tmp_path):
     server = build_server_at(tmp_path, sbx)
     # sandbox owned by uid-004 (foreign to our uid-005 identity)
     sbx.runtimes.append(sbx._runtime(
-        "sbx-acms-work-000042-20261002_010203-acms-hermes-worker-uid-004", "a-004"))
+        "sbx-acms-work-000042-20261002-010203-acms-hermes-worker-uid-004", "a-004"))
     identity = make_identity()  # uid-005
     from mcp_gateway.errors import NotFoundError
     _arm_grant(server, identity.agent_name, "proxmox.sandbox.stop")

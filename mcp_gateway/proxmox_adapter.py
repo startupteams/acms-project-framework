@@ -92,9 +92,19 @@ class SandboxClient:
             from urllib.parse import urlencode
             path += "?" + urlencode({"acms_agent_id": acms_agent_id})
         status, body = self.request("GET", path)
-        if status != 200 or not isinstance(body, list):
+        if status != 200 or body is None:
             raise DomainUnavailableError("agent-runtimes list failed")
-        return body
+        # SM v1 wraps: {"runtimes": [...]} (live-verified 2026-10-02); accept a
+        # bare list too for robustness.
+        if isinstance(body, dict):
+            rows = body.get("runtimes", [])
+        elif isinstance(body, list):
+            rows = body
+        else:
+            raise DomainUnavailableError("agent-runtimes list: unexpected shape")
+        if not isinstance(rows, list):
+            raise DomainUnavailableError("agent-runtimes list: unexpected shape")
+        return rows
 
     def get_runtime(self, runtime_id: str) -> dict:
         status, body = self.request("GET", f"/api/v1/agent-runtimes/{runtime_id}")
@@ -145,8 +155,10 @@ class SandboxClient:
 def sandbox_name(agent_name: str, work_uid: str) -> str:
     """Deterministic sandbox name for (agent, work) — §26 tagged/owned.
 
-    DNS-safe: lowercase, dots->dashes, bounded length (SM name max 63).
+    PVE VM-name safe: lowercase, alnum + dashes ONLY (no underscores — PVE
+    rejects them as invalid DNS names, live-found 2026-10-02), bounded 63.
     """
     raw = f"sbx-{work_uid}-{agent_name}".lower()
-    cleaned = "".join(c if (c.isalnum() or c in "-_") else "-" for c in raw)
-    return cleaned[:63]
+    cleaned = "".join(c if (c.isalnum() or c == "-") else "-" for c in raw)
+    cleaned = cleaned.lstrip("-") or "sbx-x"  # must start alnum
+    return cleaned[:63].rstrip("-") or "sbx-x"
