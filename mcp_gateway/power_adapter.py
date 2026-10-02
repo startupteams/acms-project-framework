@@ -26,6 +26,7 @@ Hard limits (plan §16/§27/§43):
 """
 from __future__ import annotations
 
+from .errors import NotFoundError
 from .llm_adapter import ServerManagerClient  # re-use the thin SM client
 
 

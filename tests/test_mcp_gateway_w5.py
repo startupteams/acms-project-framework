@@ -45,6 +45,9 @@ class FakePowerClient(PowerClient):
         ]}
 
     def pdu_outlet_status(self, pdu_key: str, outlet: int):
+        if pdu_key == "MIAM-XXXX":
+            # exercise the real adapter 404 path (NotFoundError branch)
+            return super().pdu_outlet_status(pdu_key, outlet)
         return {"pdu": pdu_key, "outlet": outlet, "state": "ON",
                 "notes": "read-only surface"}
 
@@ -242,3 +245,18 @@ def test_facility_total_withheld_when_channel_stale(tmp_path):
     assert reason and "stale" in reason.lower()
     hist = _read_resource(server, "power.facility.history", ident)
     assert hist["total"] is None
+
+
+def test_pdu_outlet_status_unknown_pdu_is_clean_404(tmp_path):
+    """W5 live-found: pdu_outlet_status raised NameError (NotFoundError not
+    imported) instead of a clean 404 error for unknown pdu/outlet keys."""
+    server = build_server_at(tmp_path, FakePowerClient())
+    ident = make_identity()
+    try:
+        _call_tool(server, "pdu_outlet_status", ident, pdu="MIAM-XXXX", outlet=1)
+        raised = None
+    except Exception as exc:
+        raised = exc
+    assert raised is not None
+    # must NOT be a NameError — the import fix guarantees the mapped error type
+    assert type(raised).__name__ != "NameError"
