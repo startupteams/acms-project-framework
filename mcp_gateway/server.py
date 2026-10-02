@@ -38,6 +38,7 @@ from .errors import (
     ValidationError_,
 )
 from .internal_api import InternalApi
+from .github_adapter import GithubClient, branch_owner, owned_branch
 from .llm_adapter import ServerManagerClient
 from .manifest import build_context_manifest
 from .models import (
@@ -88,6 +89,9 @@ class GatewayConfig:
     llm_token: str = ""               # Server Manager scoped service identity
     internal_token: str = ""          # shared secret for /internal/* (ACMS <-> gateway)
     approvals_path: str = "/var/lib/miam-mcp-gateway/approvals.sqlite3"
+    # ---- W3 (plan §25) ----
+    github_token: str = ""            # GitHub PAT (authority = token's own permissions)
+    github_repos: str = ""            # comma-separated owner/name allowlist for agent tokens
 
 
 def _parse_list(raw: str) -> list[str]:
@@ -206,6 +210,7 @@ class GatewayServer:
     def __init__(self, config: GatewayConfig, *, tokens: TokenStore, audit: AuditLog,
                  acms_client: AcmsClient | None = None,
                  llm_client: ServerManagerClient | None = None,
+                 github_client: GithubClient | None = None,
                  approvals: ApprovalStore | None = None):
         self.config = config
         self.tokens = tokens
@@ -221,6 +226,11 @@ class GatewayServer:
         self.llm: ServerManagerClient | None = llm_client or (
             ServerManagerClient(config.llm_base_url, config.llm_token)
             if config.llm_base_url and config.llm_token else None
+        )
+        self.github: GithubClient | None = github_client or (
+            GithubClient(config.github_token,
+                         repos_allowlist=_parse_list(config.github_repos))
+            if config.github_token else None
         )
         self.internal = InternalApi(tokens=tokens, audit=audit, approvals=self.approvals,
                                     internal_token=config.internal_token)
@@ -249,6 +259,7 @@ class GatewayServer:
 
         self._build_acms_capabilities()
         self._build_llm_runtime_capabilities()
+        self._build_github_capabilities()
         self.app = self._wrap_with_identity(self.mcp.streamable_http_app())
 
     # ------------- public ASGI app (adds /health + /internal) -------------
@@ -268,7 +279,8 @@ class GatewayServer:
                         "status": "ok",
                         "gateway": "miam-mcp-gateway",
                         "version": __version__,
-                        "domains": ["acms", "llm", "runtime"],
+                        "domains": ["acms", "llm", "runtime"]
+                                   + (["github"] if outer_app.github else []),
                     }).encode()
                     await send({
                         "type": "http.response.start",
@@ -309,6 +321,7 @@ class GatewayServer:
                 risk_class=_cap.risk,
                 status="ok",
                 approval=None,
+                args_hash=hash_args(ARGS_HOLDER.get()),
             )
             start = time.monotonic()
             try:
@@ -1098,7 +1111,453 @@ class GatewayServer:
                   request_elevated, RiskClass.SAFE_WRITE)
 
 
+    # ------------- GitHub capability construction (plan §25) -------------
+
+    def _build_github_capabilities(self) -> None:
+        gh = self.github
+        acms = self.acms
+        if gh is None:
+            return  # github domain absent when unconfigured (health omits it)
+
+        def _require_github():
+            if gh is None:
+                raise DomainUnavailableError(
+                    "github domain not configured (MCP_GATEWAY_GITHUB_TOKEN missing)")
+            return gh
+
+        # ---- scope/ownership helpers (§25 policy + §31 security tests) ----
+
+        def _repo_in_scope(identity: CallIdentity, repo: str) -> None:
+            repo = (repo or "").strip().strip("/")
+            if not repo or repo.count("/") != 1:
+                raise ValidationError_('repo must be "owner/name"')
+            if identity.token_kind == TokenKind.ASSIGNMENT:
+                allowed = [r.lower() for r in (identity.repositories or [])]
+            else:
+                allowed = [r.lower() for r in gh.repos_allowlist] if gh else []
+            if repo.lower() not in allowed:
+                raise OutOfScopeError(
+                    f"repository not in assignment scope: {repo}")
+
+        def _caller_work_uid(identity: CallIdentity) -> str:
+            """The work_uid this identity may write code against."""
+            if identity.is_assignment_scoped and identity.work_uid:
+                return identity.work_uid
+            if identity.acms_agent_id:
+                assignment = acms.active_assignment(identity.acms_agent_id)
+                if assignment:
+                    work = acms.find_work_item(assignment.get("work_item_id", ""))
+                    if work and work.get("work_uid"):
+                        return work.get("work_uid", "")
+            raise OutOfScopeError(
+                "no assignment-bound work item; github writes require one")
+
+        def _own_branch(identity: CallIdentity) -> str:
+            return owned_branch(_caller_work_uid(identity), identity.agent_name)
+
+        def _assert_own_branch(identity: CallIdentity, branch: str) -> None:
+            expected = _own_branch(identity)
+            if (branch or "") != expected:
+                owner = branch_owner(branch) or ("", "")
+                raise OutOfScopeError(
+                    f"branch not owned by this agent/work: {branch!r} "
+                    f"(expected {expected!r}; branch prefix "
+                    f"{owner[0] or 'unknown'})")
+
+        # ---- resources (READ) ----
+
+        def _register_github_resource(name, uri, resolver, description, *,
+                                      scopes=None):
+            cap = Capability(
+                name=name, domain="github", risk=RiskClass.READ,
+                roles={"worker", "reviewer", "project_manager", "executive",
+                       "infrastructure_admin", "observer"},
+                scopes=scopes or {"github.read"},
+                description=description, kind="resource", uri_template=uri,
+            )
+
+            from mcp.server.fastmcp.resources.templates import FunctionResource
+
+            if _TEMPLATE_PARAM_SEARCH.search(uri) is None:
+                def _static_resolver(identity):
+                    return resolver(identity)
+
+                cap.handler = lambda ident, ctx=None, _r=_static_resolver: _async_result(_r(ident))
+
+                async def _static():
+                    identity = CURRENT_IDENTITY.get()
+                    entry = AuditEntry(
+                        agent_name=identity.agent_name if identity else "(none)",
+                        token_id=identity.token_id if identity else "",
+                        token_kind=identity.token_kind.value if identity else "agent",
+                        work_uid=getattr(identity, "work_uid", None),
+                        domain=cap.domain, name=cap.name, entry_kind="resource",
+                        risk_class=cap.risk, status="ok",
+                    )
+                    start = time.monotonic()
+                    try:
+                        if identity is None:
+                            raise UnauthenticatedError("no identity bound")
+                        cap.authorize(identity)
+                        result = resolver(identity)
+                        entry.duration_ms = int((time.monotonic() - start) * 1000)
+                        self.audit.record(entry)
+                        return result
+                    except GatewayError as exc:
+                        entry.duration_ms = int((time.monotonic() - start) * 1000)
+                        entry.status = "denied" if exc.error_type in {
+                            GatewayErrorType.ROLE_REQUIRED,
+                            GatewayErrorType.SCOPE_REQUIRED,
+                            GatewayErrorType.OUT_OF_SCOPE,
+                            GatewayErrorType.DESTRUCTIVE_DENY,
+                            GatewayErrorType.APPROVAL_REQUIRED} else "error"
+                        entry.error_type = exc.error_type.value
+                        entry.detail = exc.detail
+                        self.audit.record(entry)
+                        exc.args = (f"{exc.error_type.value}: {exc.detail}",)
+                        raise
+                self.mcp._resource_manager.add_resource(
+                    FunctionResource.from_function(_static, uri=uri, name=dotted(name),
+                                                   description=description,
+                                                   mime_type="application/json"))
+            else:
+                async def tpl_fn(**kwargs):
+                    identity = CURRENT_IDENTITY.get()
+                    entry = AuditEntry(
+                        agent_name=identity.agent_name if identity else "(none)",
+                        token_id=identity.token_id if identity else "",
+                        token_kind=identity.token_kind.value if identity else "agent",
+                        work_uid=getattr(identity, "work_uid", None),
+                        domain=cap.domain, name=cap.name, entry_kind="resource",
+                        risk_class=cap.risk, status="ok",
+                        args_hash=hash_args(kwargs),
+                    )
+                    start = time.monotonic()
+                    try:
+                        if identity is None:
+                            raise UnauthenticatedError("no identity bound")
+                        cap.authorize(identity)
+                        result = resolver(identity, kwargs)
+                        entry.duration_ms = int((time.monotonic() - start) * 1000)
+                        self.audit.record(entry)
+                        return result
+                    except GatewayError as exc:
+                        entry.duration_ms = int((time.monotonic() - start) * 1000)
+                        entry.status = "denied" if exc.error_type in {
+                            GatewayErrorType.ROLE_REQUIRED,
+                            GatewayErrorType.SCOPE_REQUIRED,
+                            GatewayErrorType.OUT_OF_SCOPE,
+                            GatewayErrorType.DESTRUCTIVE_DENY,
+                            GatewayErrorType.APPROVAL_REQUIRED} else "error"
+                        entry.error_type = exc.error_type.value
+                        entry.detail = exc.detail
+                        self.audit.record(entry)
+                        exc.args = (f"{exc.error_type.value}: {exc.detail}",)
+                        raise
+                self.mcp._resource_manager.add_template(
+                    tpl_fn, uri_template=uri, name=dotted(name),
+                    description=description, mime_type="application/json")
+
+            # direct-call handle for tests/registry consumers:
+            # handler(identity, uri_params) with the same authorize+audit path
+            async def _direct(identity, params=None, _resolver=resolver,
+                              _cap=cap):
+                entry = AuditEntry(
+                    agent_name=identity.agent_name if identity else "(none)",
+                    token_id=identity.token_id if identity else "",
+                    token_kind=identity.token_kind.value if identity else "agent",
+                    work_uid=getattr(identity, "work_uid", None),
+                    domain=_cap.domain, name=_cap.name, entry_kind="resource",
+                    risk_class=_cap.risk, status="ok",
+                    args_hash=hash_args(params or {}),
+                )
+                start = time.monotonic()
+                try:
+                    if identity is None:
+                        raise UnauthenticatedError("no identity bound")
+                    _cap.authorize(identity)
+                    result = _resolver(identity, params or {})
+                    entry.duration_ms = int((time.monotonic() - start) * 1000)
+                    self.audit.record(entry)
+                    return result
+                except GatewayError as exc:
+                    entry.duration_ms = int((time.monotonic() - start) * 1000)
+                    entry.status = "denied" if exc.error_type in {
+                        GatewayErrorType.ROLE_REQUIRED,
+                        GatewayErrorType.SCOPE_REQUIRED,
+                        GatewayErrorType.OUT_OF_SCOPE,
+                        GatewayErrorType.DESTRUCTIVE_DENY,
+                        GatewayErrorType.APPROVAL_REQUIRED} else "error"
+                    entry.error_type = exc.error_type.value
+                    entry.detail = exc.detail
+                    self.audit.record(entry)
+                    exc.args = (f"{exc.error_type.value}: {exc.detail}",)
+                    raise
+            cap.handler = _direct
+            self.registry.register(cap)
+
+        def r_repo(identity, uri_params):
+            repo = uri_params.get("repo", "")
+            _repo_in_scope(identity, repo)
+            return _require_github().get_repo(repo)
+
+        def r_branch(identity, uri_params):
+            repo = uri_params.get("repo", "")
+            branch = uri_params.get("branch", "")
+            _repo_in_scope(identity, repo)
+            return _require_github().get_branch(repo, branch)
+
+        def r_commit(identity, uri_params):
+            repo = uri_params.get("repo", "")
+            ref = uri_params.get("ref", "")
+            _repo_in_scope(identity, repo)
+            return _require_github().get_commit(repo, ref)
+
+        def r_pr(identity, uri_params):
+            repo = uri_params.get("repo", "")
+            num_raw = uri_params.get("number", "")
+            try:
+                number = int(num_raw)
+            except ValueError:
+                raise ValidationError_("PR number must be an integer")
+            _repo_in_scope(identity, repo)
+            return _require_github().get_pr(repo, number)
+
+        def r_checks(identity, uri_params):
+            repo = uri_params.get("repo", "")
+            ref = uri_params.get("ref", "")
+            _repo_in_scope(identity, repo)
+            return _require_github().get_checks(repo, ref)
+
+        def r_issue(identity, uri_params):
+            repo = uri_params.get("repo", "")
+            num_raw = uri_params.get("number", "")
+            try:
+                number = int(num_raw)
+            except ValueError:
+                raise ValidationError_("issue number must be an integer")
+            _repo_in_scope(identity, repo)
+            return _require_github().get_issue(repo, number)
+
+        _register_github_resource(
+            "github.repo.get", "github://repos/{repo}", r_repo,
+            "Repository metadata (default branch, visibility, caller permissions).")
+        _register_github_resource(
+            "github.branch.get", "github://repos/{repo}/branches/{branch}", r_branch,
+            "One branch: head sha + protected flag.")
+        _register_github_resource(
+            "github.commit.get", "github://repos/{repo}/commits/{ref}", r_commit,
+            "One commit: message, author, files touched.")
+        _register_github_resource(
+            "github.pr.get", "github://repos/{repo}/pulls/{number}", r_pr,
+            "One pull request: state, head/base, mergeability.")
+        _register_github_resource(
+            "github.checks.get", "github://repos/{repo}/checks/{ref}", r_checks,
+            "Check runs for a ref (commit sha or branch name).")
+        _register_github_resource(
+            "github.issue.get", "github://repos/{repo}/issues/{number}", r_issue,
+            "One issue: state, title, labels (is_pr flag when it is a PR).")
+
+        # ---- tools (SAFE_WRITE; branch-ownership enforced) ----
+
+        async def branch_create(identity, ctx, repo: str, base: str = ""):
+            _repo_in_scope(identity, repo)
+            g = _require_github()
+            branch = _own_branch(identity)
+            base_ref = (base or "").strip() or g.get_repo(repo)["default_branch"]
+            # base may not be inside another agent's branch namespace (§25:
+            # no two agents share a writable branch; also blocks chain-branching)
+            if (base_ref or "").startswith("agent/"):
+                _assert_own_branch(identity, base_ref)
+            out = g.create_branch(repo, branch, base_ref)
+            return {**out, "note": "branch owned by this agent/work; foreign "
+                                   "agents cannot write it through the gateway"}
+
+        _STAGED_BLOBS: dict[str, dict[str, dict[str, str]]] = {}
+        # key: (agent_name, work_uid, repo) -> {path: {blob_sha, content_b64}}
+        # In-process staging area; gateway is a single-process service (systemd
+        # unit). Staged blobs are durable on GitHub ONLY after commit.create.
+
+        def _staging_key(identity: CallIdentity, repo: str) -> str:
+            return f"{identity.agent_name}|{_caller_work_uid(identity)}|{repo}"
+
+        async def file_write(identity, ctx, repo: str, path: str, content: str,
+                             encoding: str = "utf-8"):
+            _repo_in_scope(identity, repo)
+            if not path or path.startswith("/") or ".." in path.split("/"):
+                raise ValidationError_("path must be a repo-relative path without traversal")
+            branch = _own_branch(identity)
+            # the target branch must EXIST and be the caller's own (prevents
+            # staging against a branch the agent cannot push)
+            g = _require_github()
+            try:
+                g.get_branch(repo, branch)
+            except NotFoundError:
+                raise ValidationError_(
+                    f"branch {branch!r} does not exist yet; run github.branch.create first")
+            blob_sha = g.create_blob(repo, content, encoding=encoding)
+            key = _staging_key(identity, repo)
+            _STAGED_BLOBS.setdefault(key, {})[path] = {
+                "blob_sha": blob_sha, "encoding": encoding}
+            return {"path": path, "blob_sha": blob_sha, "branch": branch,
+                    "staged": True,
+                    "note": "staged in gateway memory; durable only after "
+                            "github.commit.create"}
+
+        async def commit_create(identity, ctx, repo: str, message: str,
+                                paths: list[str] | None = None,
+                                author_name: str = "", author_email: str = ""):
+            _repo_in_scope(identity, repo)
+            if not (message or "").strip():
+                raise ValidationError_("commit message is required")
+            key = _staging_key(identity, repo)
+            staged = dict(_STAGED_BLOBS.get(key, {}))
+            if paths:
+                wanted = set(paths)
+                staged = {p: v for p, v in staged.items() if p in wanted}
+                if not staged:
+                    raise ValidationError_("no staged files match paths")
+            g = _require_github()
+            branch = _own_branch(identity)
+            parent_sha = g.get_commit_sha(repo, branch)
+            staged_list = [{"path": p, "blob_sha": v["blob_sha"]}
+                           for p, v in sorted(staged.items())]
+            tree_sha, _base_tree = g.build_tree_from_base(
+                repo, parent_sha, staged_list)
+            name = (author_name or "").strip() or identity.agent_name
+            email = (author_email or "").strip() or                 f"{identity.agent_name}@agents.startupteams.co"
+            out = g.create_commit(repo, branch, message, tree_sha, parent_sha,
+                                  name, email)
+            if not paths:
+                _STAGED_BLOBS.pop(key, None)  # full commit consumes staging
+            else:
+                for p in staged:
+                    _STAGED_BLOBS.get(key, {}).pop(p, None)
+            return {**out, "files": sorted(staged.keys())}
+
+        async def pr_create(identity, ctx, repo: str, title: str, body: str = "",
+                            base: str = "", draft: bool = False):
+            _repo_in_scope(identity, repo)
+            if not (title or "").strip():
+                raise ValidationError_("PR title is required")
+            g = _require_github()
+            head = _own_branch(identity)
+            base_ref = (base or "").strip() or g.get_repo(repo)["default_branch"]
+            if base_ref == head:
+                raise ValidationError_("head and base are the same branch")
+            if base_ref.startswith("agent/"):
+                _assert_own_branch(identity, base_ref)
+            out = g.create_pr(repo, head, base_ref, title, body, draft=draft)
+            return {**out, "head": head, "base": base_ref}
+
+        async def pr_comment(identity, ctx, repo: str, number: int, body: str):
+            _repo_in_scope(identity, repo)
+            if not (body or "").strip():
+                raise ValidationError_("comment body is required")
+            try:
+                number = int(number)
+            except (TypeError, ValueError):
+                raise ValidationError_("PR number must be an integer")
+            return _require_github().add_pr_comment(repo, number, body)
+
+        async def review_comment(identity, ctx, repo: str, number: int,
+                                 commit_sha: str, path: str, body: str,
+                                 line: int | None = None):
+            _repo_in_scope(identity, repo)
+            if not (body or "").strip():
+                raise ValidationError_("comment body is required")
+            if not (commit_sha or "").strip():
+                raise ValidationError_("commit_sha is required (the commit the comment anchors to)")
+            if not (path or "").strip():
+                raise ValidationError_("path is required")
+            try:
+                number = int(number)
+            except (TypeError, ValueError):
+                raise ValidationError_("PR number must be an integer")
+            # COMMENT-only reviews: the gateway never APPROVES or REQUESTS
+            # CHANGES — review verdicts stay human (plan §25).
+            return _require_github().add_review_comment(
+                repo, number, body, commit_sha, path, line=line)
+
+        def _gh_tool(name, desc, schema, fn):
+            wrapped = _bind_args(fn)
+            cap = Capability(
+                name=name, domain="github", risk=RiskClass.SAFE_WRITE,
+                roles={"worker"},
+                scopes={"github.write"},
+                description=desc, timeout_seconds=30, side_effect="external",
+                meta={"input_schema": schema},
+            )
+            cap.handler = wrapped
+            self._register_tool(cap)
+
+        _gh_tool("github.branch.create",
+                 "Create YOUR OWN agent branch (agent/<work_uid>-<agent>) in a scoped repo.",
+                 {"type": "object",
+                  "properties": {"repo": {"type": "string", "minLength": 3},
+                                 "base": {"type": "string"}},
+                  "required": ["repo"]},
+                 branch_create)
+        _gh_tool("github.file.write",
+                 "Stage a file write on YOUR OWN agent branch (durable only after github.commit.create).",
+                 {"type": "object",
+                  "properties": {"repo": {"type": "string", "minLength": 3},
+                                 "path": {"type": "string", "minLength": 1},
+                                 "content": {"type": "string"},
+                                 "encoding": {"type": "string"}},
+                  "required": ["repo", "path", "content"]},
+                 file_write)
+        _gh_tool("github.commit.create",
+                 "Commit staged file writes to YOUR OWN agent branch (fast-forward only; never force-push).",
+                 {"type": "object",
+                  "properties": {"repo": {"type": "string", "minLength": 3},
+                                 "message": {"type": "string", "minLength": 1},
+                                 "paths": {"type": "array",
+                                           "items": {"type": "string"}},
+                                 "author_name": {"type": "string"},
+                                 "author_email": {"type": "string"}},
+                  "required": ["repo", "message"]},
+                 commit_create)
+        _gh_tool("github.pr.create",
+                 "Open a pull request from YOUR OWN agent branch to a base branch.",
+                 {"type": "object",
+                  "properties": {"repo": {"type": "string", "minLength": 3},
+                                 "title": {"type": "string", "minLength": 1},
+                                 "body": {"type": "string"},
+                                 "base": {"type": "string"},
+                                 "draft": {"type": "boolean"}},
+                  "required": ["repo", "title"]},
+                 pr_create)
+        _gh_tool("github.pr.comment",
+                 "Comment on a pull request in a scoped repository.",
+                 {"type": "object",
+                  "properties": {"repo": {"type": "string", "minLength": 3},
+                                 "number": {"type": "integer", "minimum": 1},
+                                 "body": {"type": "string", "minLength": 1}},
+                  "required": ["repo", "number", "body"]},
+                 pr_comment)
+        _gh_tool("github.review.comment",
+                 "Add a line-anchored review COMMENT on a PR (COMMENT-only; approval verdicts stay human).",
+                 {"type": "object",
+                  "properties": {"repo": {"type": "string", "minLength": 3},
+                                 "number": {"type": "integer", "minimum": 1},
+                                 "commit_sha": {"type": "string", "minLength": 1},
+                                 "path": {"type": "string", "minLength": 1},
+                                 "body": {"type": "string", "minLength": 1},
+                                 "line": {"type": "integer", "minimum": 1}},
+                  "required": ["repo", "number", "commit_sha", "path", "body"]},
+                 review_comment)
+
 # ---------------- argument plumbing helpers ----------------
+
+def _async_result(value):
+    """Wrap a sync resolver result into an awaitable for resource handlers."""
+    import asyncio
+
+    async def _go():
+        return value
+    return _go()
+
 
 ARGS_HOLDER: contextvars.ContextVar[dict[str, Any]] = contextvars.ContextVar(
     "gateway_tool_args", default={}

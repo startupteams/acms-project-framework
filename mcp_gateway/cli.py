@@ -49,6 +49,8 @@ def _config_from_env() -> GatewayConfig:
         internal_token=os.environ.get("MCP_GATEWAY_INTERNAL_TOKEN", ""),
         approvals_path=os.environ.get("MCP_GATEWAY_APPROVALS_PATH",
                                       "/var/lib/miam-mcp-gateway/approvals.sqlite3"),
+        github_token=os.environ.get("MCP_GATEWAY_GITHUB_TOKEN", ""),
+        github_repos=os.environ.get("MCP_GATEWAY_GITHUB_REPOS", ""),
     )
 
 
