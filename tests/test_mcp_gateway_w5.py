@@ -172,3 +172,40 @@ def test_request_reboot_worker_gets_durable_approval_path(tmp_path):
     with pytest.raises(ApprovalRequiredError):
         _call_tool(server, "pdu_request_reboot", make_identity(),
                    target="MIAM-00119", reason="worker tries reboot")
+
+def test_cli_mint_agent_inherits_store_default_scopes(tmp_path, monkeypatch):
+    """W5 live-found regression: cmd_mint_agent hardcoded scopes=['acms.read',
+    'acms.write'], so CLI-minted tokens lacked power.read/proxmox.write and got
+    SCOPE_REQUIRED on every non-acms domain (same class as the W2 gap, PR #80).
+    The CLI must pass scopes=None and inherit the store's full-domain defaults."""
+    import json
+    import sys
+    from mcp_gateway import cli as mcp_cli
+
+    monkeypatch.setenv("MCP_GATEWAY_TOKENS_DB", str(tmp_path / "tokens.sqlite3"))
+    monkeypatch.setattr(mcp_cli, "_config_from_env", lambda: type(
+        "C", (), {"tokens_path": tmp_path / "tokens.sqlite3"})())
+
+    parser = mcp_cli._build_parser() if hasattr(mcp_cli, "_build_parser") else None
+    if parser is not None:
+        ns = parser.parse_args(["mint-agent", "w-cli-scope"])
+    else:
+        ns = type("NS", (), {"agent_name": "w-cli-scope",
+                             "acms_agent_id": None, "executive": False,
+                             "ttl_days": 365})()
+
+    import io
+    buf = io.StringIO()
+    _stdout = sys.stdout
+    sys.stdout = buf
+    try:
+        rc = mcp_cli.cmd_mint_agent(ns)
+    finally:
+        sys.stdout = _stdout
+    assert rc == 0
+    out = json.loads(buf.getvalue())
+    assert "power.read" in out["scopes"]
+    assert "proxmox.write" in out["scopes"]
+    assert "acms.read" in out["scopes"] and "acms.write" in out["scopes"]
+    # non-executive mint stays a plain worker
+    assert out["roles"] == ["worker"]

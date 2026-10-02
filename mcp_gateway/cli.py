@@ -73,12 +73,16 @@ def cmd_serve(_args) -> int:
 def cmd_mint_agent(args) -> int:
     store = TokenStore(_config_from_env().tokens_path)
     roles = ["worker"]
-    scopes = ["acms.read", "acms.write"]
     if args.executive:
         roles = ["executive", "infrastructure_admin"]
+    # W5 live-found: pass scopes=None so the store's full-domain default scope
+    # set applies (acms/llm/runtime/proxmox/power). Hardcoding acms-only here
+    # made CLI-minted tokens SCOPE_REQUIRED on every non-acms domain — same
+    # class as the W2 gap (PR #80). Scope widening is metadata; risk classes +
+    # roles still gate every capability.
     rec, raw = store.mint_agent_token(
         args.agent_name, acms_agent_id=args.acms_agent_id or None,
-        roles=roles, scopes=scopes,
+        roles=roles, scopes=None,
         ttl_days=args.ttl_days,
     )
     print(json.dumps({
