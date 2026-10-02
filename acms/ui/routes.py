@@ -66,9 +66,18 @@ def install_ui(app) -> None:
 
     app.include_router(work_router)
     app.include_router(agent_router)
+    from .chat_routes import router as chat_router
+
+    app.include_router(chat_router)
     app.include_router(attention_router)
     app.include_router(jira_router)
     app.include_router(product_router)
+    from .product_detail_routes import router as product_detail_router
+
+    app.include_router(product_detail_router)
+    from .search_routes import router as search_ui_router
+
+    app.include_router(search_ui_router)
     app.include_router(a2a_ui_router)
 
 
@@ -198,73 +207,21 @@ async def ui_home(
     user=Depends(current_user),
     db: AsyncSession = Depends(get_session),
 ):
-    agents = await _load_agents(db)
-    internal = sum(1 for a in agents if a["trust_class"] == "internal")
-    external = sum(1 for a in agents if a["trust_class"] == "external")
-    # Real fleet status (ADR-0010 connectivity + execution states; STEA-004 §16/§29)
-    from sqlalchemy import func, select
+    """Operator Home (STEA-004 Phase C §18): Work Now / Agent Fleet /
+    Human Attention / System-Cost Health / Product Slop Ratios. All zones
+    read the shared operator_data layer — no duplicate derivations."""
+    from .operator_data import (
+        fleet_rows, human_attention, product_slop_cards, system_cost_health, work_now,
+    )
 
-    from ..a2a_models import ArtifactRecord, HumanInboxItemRecord
-    from ..telemetry_models import AgentStatusCurrentRecord
-    from ..work_models import ExecutionTaskRecord
-
-    status_rows = {r.agent_id: r for r in (await db.scalars(select(AgentStatusCurrentRecord))).all()}
-    running_tasks = (await db.scalar(
-        select(func.count()).select_from(ExecutionTaskRecord)
-        .where(ExecutionTaskRecord.status == "RUNNING",
-               ExecutionTaskRecord.transport_state == "RUNNING"))) or 0
-    dispatching = (await db.scalar(
-        select(func.count()).select_from(ExecutionTaskRecord)
-        .where(ExecutionTaskRecord.status == "RUNNING",
-               ExecutionTaskRecord.transport_state == "DISPATCHING"))) or 0
-    needs_human = (await db.scalar(
-        select(func.count()).select_from(HumanInboxItemRecord)
-        .where(HumanInboxItemRecord.item_class == "ACTION_REQUIRED",
-               HumanInboxItemRecord.archived_at.is_(None),
-               HumanInboxItemRecord.read_at.is_(None)))) or 0
-    artifact_count = (await db.scalar(select(func.count()).select_from(ArtifactRecord))) or 0
-
-    def _fleet_state(a: dict) -> str:
-        s = status_rows.get(a["agent_id"])
-        if s is None:
-            return "IDLE" if a["trust_class"] == "internal" else "OFFLINE"
-        if s.connectivity == "STALE":
-            return "STALE"
-        if s.connectivity == "UNREACHABLE":
-            return "OFFLINE"
-        if s.agent_running == "true":
-            return "RUNNING"
-        return "IDLE"
-
-    fleet_counts: dict[str, int] = {}
-    for a in agents:
-        st = _fleet_state(a)
-        fleet_counts[st] = fleet_counts.get(st, 0) + 1
-    agent_cards = []
-    for a in agents:
-        s = status_rows.get(a["agent_id"])
-        agent_cards.append({
-            "agent_id": a["agent_id"],
-            "name": a["display_name"],
-            "state": _fleet_state(a),
-            "last_contact": s.last_contact_at if s else None,
-            "session_title": s.session_title if s else None,
-            "model_id": s.model_id if s else None,
-            "context_util": s.context_utilization_percent if s else None,
-        })
     context = _base_context(user) | {
         "app_health": "ok",
         "db_health": "ok" if await _database_ok() else "unreachable",
-        "agent_count": len(agents),
-        "internal_count": internal,
-        "external_count": external,
-        "fleet_counts": fleet_counts,
-        "agent_cards": agent_cards,
-        "running_tasks": running_tasks,
-        "dispatching_tasks": dispatching,
-        "needs_human": needs_human,
-        "artifact_count": artifact_count,
-        "not_implemented": ["cost"],  # honest: usage pipeline (plan §26) ships separately
+        "work_now": await work_now(db),
+        "fleet": await fleet_rows(db),
+        "attention": await human_attention(db),
+        "health": await system_cost_health(db),
+        "slop_cards": await product_slop_cards(db),
     }
     return templates.TemplateResponse(request, "home.html", context)
 

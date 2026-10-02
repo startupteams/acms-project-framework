@@ -4,10 +4,35 @@
 
 {% block content %}
 <h1>Artifacts</h1>
+
+<section class="panel">
+  <h2>Search / filter <span class="muted">· UID · UUID · sha256 (full or prefix) · title · Jira · Work UID</span></h2>
+  <form method="get" action="/ui/artifacts" class="filter-form">
+    <label>Search <input name="q" value="{{ q }}" placeholder="699ecf76, 81325074b6ed, STNA-87…"></label>
+    <label>Type
+      <select name="artifact_type">
+        <option value="">all</option>
+        {% for t in types %}<option value="{{ t }}" {% if artifact_type == t %}selected{% endif %}>{{ t }}</option>{% endfor %}
+      </select>
+    </label>
+    <input type="hidden" name="sort" value="{{ sort }}">
+    <input type="hidden" name="direction" value="{{ direction }}">
+    <button type="submit">Apply</button>
+    <a class="muted" href="/ui/artifacts">clear</a>
+  </form>
+</section>
+
 <section class="panel">
   {% if items %}
-  <table>
-    <thead><tr><th>Artifact UID</th><th>Title</th><th>Type</th><th>Jira</th><th>Work</th><th>Size</th><th>Created</th></tr></thead>
+  <table class="data">
+    <thead><tr>
+      {% set cols = [('uid','Artifact UID'),('title','Title'),('type','Type'),('jira','Jira'),('work','Work UID'),('product','Product'),('agent','Agent'),('size','Size'),('created','Created')] %}
+      {% for key, label in cols %}
+      <th><a href="/ui/artifacts?q={{ q }}&artifact_type={{ artifact_type }}&sort={{ key }}&direction={{ next_dir if sort == key else 'asc' }}">
+        {{ label }}{% if sort == key %} {{ '↑' if direction == 'asc' else '↓' }}{% endif %}</a></th>
+      {% endfor %}
+      <th>SHA</th>
+    </tr></thead>
     <tbody>
       {% for a in items %}
       <tr>
@@ -15,15 +40,18 @@
         <td><a href="/ui/artifacts/{{ a.artifact_uid or a.artifact_id }}">{{ a.title }}</a></td>
         <td>{{ a.artifact_type }}</td>
         <td>{{ a.jira_issue_key or '&mdash;' }}</td>
-        <td>{% if a.work_item_id %}{{ a.work_item_id[:8] }}{% else %}&mdash;{% endif %}</td>
+        <td>{% if a.work_item_id %}<a href="/ui/work/{{ a.work_item_id }}"><code>{{ a.work_uid or a.work_item_id[:8] }}</code></a>{% else %}&mdash;{% endif %}</td>
+        <td>{{ a.product or '—' }}</td>
+        <td>{{ a.agent or '—' }}</td>
         <td>{{ a.size }} B</td>
         <td>{{ a.created }}</td>
+        <td><code title="{{ a.sha }}">{{ a.sha[:8] }}</code></td>
       </tr>
       {% endfor %}
     </tbody>
   </table>
   {% else %}
-  <p class="muted">No artifacts stored yet.</p>
+  <p class="muted">No artifacts match. Search by UID, UUID, sha256 prefix, title, or Jira key (§26).</p>
   {% endif %}
 </section>
 {% endblock %}

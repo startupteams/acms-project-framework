@@ -10,11 +10,21 @@
 <section class="panel warn"><strong>Archive refused:</strong> this is an unread ACTION_REQUIRED item. Tick force to archive anyway.</section>
 {% endif %}
 
+<div class="inbox-nav">
+  {% if prev_id %}<a class="button" href="/ui/inbox/{{ prev_id }}">&larr; Previous</a>{% else %}<span class="muted">no previous</span>{% endif %}
+  {% if next_id %}<a class="button" href="/ui/inbox/{{ next_id }}">Next &rarr;</a>{% else %}<span class="muted">no next</span>{% endif %}
+</div>
+
 <section class="panel">
   <h2>Summary</h2>
   <p>{{ item.summary or '&mdash;' }}</p>
   {% if work %}
-  <p>Work: <strong>{{ work.work_key }}</strong> {{ work.title }} ({{ work.status }})</p>
+  <p>Work: <a href="/ui/work/{{ item.work_item_id }}"><code>{{ item.work_uid or work.work_key }}</code></a>
+     {{ work.title }} ({{ work.status }})</p>
+  {% endif %}
+  {% if linked_artifact %}
+  <p>Artifact: <a href="/ui/artifacts/{{ linked_artifact.artifact_uid }}"><code>{{ linked_artifact.artifact_uid }}</code></a>
+     {{ linked_artifact.title }}</p>
   {% endif %}
   {% if item.jira_issue_key %}<p>Jira: <code>{{ item.jira_issue_key }}</code></p>{% endif %}
 </section>

@@ -2,6 +2,23 @@
 {% block title %}{{ item.title }} — ACMS{% endblock %}
 {% block content %}
 <h1>{{ item.title }} <span class="{{ 'badge badge-' ~ item.kind }}">{{ item.kind }}</span></h1>
+<p>{% if item.work_uid %}<code class="work-uid">{{ item.work_uid }}</code> <span class="muted">Work UID (immutable) ·</span>{% endif %}
+   {% if item.work_key %}<code>{{ item.work_key }}</code>{% endif %}
+   <span class="muted">UUID under Technical Details below</span></p>
+
+{% if canonical_handoff %}
+<section class="panel canonical-handoff" id="handoff">
+  <h2>HANDOFF <span class="muted">canonical Markdown handoff for this Work Item (§9)</span></h2>
+  <p>
+    <strong>Artifact UID:</strong> <code>{{ canonical_handoff.artifact_uid or canonical_handoff.artifact_id }}</code>
+    · <a href="/ui/artifacts/{{ canonical_handoff.artifact_uid or canonical_handoff.artifact_id }}">View Markdown</a>
+    · <a href="/ui/artifacts/{{ canonical_handoff.artifact_uid or canonical_handoff.artifact_id }}/download">Download</a>
+    · created {{ canonical_handoff.created_str }}
+  </p>
+  {% if canonical_handoff.bluf %}<p><strong>BLUF:</strong> {{ canonical_handoff.bluf }}</p>{% endif %}
+  <details><summary>Show handoff content</summary><pre class="markdown">{{ canonical_handoff.content }}</pre></details>
+</section>
+{% endif %}
 
 {% if error %}
 <section class="notice warn"><p>{{ error }}</p></section>
@@ -350,4 +367,16 @@
   </details>
   {% endif %}
 </section>
+
+<details class="tech-details">
+  <summary>Technical details</summary>
+  <table class="data">
+    <tbody>
+      <tr><th>Internal UUID</th><td><code>{{ item.work_item_id }}</code></td></tr>
+      <tr><th>Work UID</th><td><code>{{ item.work_uid or '—' }}</code></td></tr>
+      <tr><th>Short key</th><td><code>{{ item.work_key or '—' }}</code></td></tr>
+    </tbody>
+  </table>
+  <p class="muted">The internal UUID is the immutable database identity; the Work UID is the immutable human link text (§6).</p>
+</details>
 {% endblock %}

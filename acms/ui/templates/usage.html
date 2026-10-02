@@ -1,7 +1,49 @@
 {% extends "base.html" %}
 {% block title %}Usage — ACMS{% endblock %}
 {% block content %}
-<h1>Usage / Economics</h1>
+<h1>Usage / Costs</h1>
+
+<section class="panel">
+  <h2>Facility electricity — MARION_IA_USA <span class="muted">· §17: ACMS is the primary human view; LLM Manager stays the collector</span></h2>
+  {% if power and power.facility %}
+    {% set fac = power.facility %}
+    <div class="cards">
+      {% for c in power.channels %}
+      <div class="card">
+        <h2>{{ c.label }}</h2>
+        {% if c.stale or c.avg_watts_1h is none %}
+        <p class="big warn">STALE</p>
+        <p class="muted">sample {{ c.last_sample_ts[:16] if c.last_sample_ts else '—' }} — value withheld, never 0</p>
+        {% else %}
+        <p class="big">{{ '%.0f'|format(c.avg_watts_1h) }} W</p>
+        <p class="muted">24h {{ '%.2f'|format(c.kwh_24h) }} kWh / ${{ '%.2f'|format(c.cost_usd_24h) }} · 30d {{ '%.1f'|format(c.kwh_30d) }} kWh / ${{ '%.2f'|format(c.cost_usd_30d) }}</p>
+        {% endif %}
+      </div>
+      {% endfor %}
+      <div class="card">
+        <h2>{{ fac.label }}</h2>
+        {% if fac.current_watts is not none %}
+        <p class="big ok">{{ '%.0f'|format(fac.current_watts) }} W</p>
+        <p class="muted">24h {{ '%.2f'|format(fac.kwh_24h) }} kWh / ${{ '%.2f'|format(fac.cost_usd_24h) }} · 30d {{ '%.1f'|format(fac.kwh_30d) }} kWh / ${{ '%.2f'|format(fac.cost_usd_30d) }}</p>
+        {% else %}
+        <p class="big warn">INCOMPLETE</p>
+        <p class="muted">{{ fac.incomplete_reason or 'one or more channels stale' }} — total withheld, never partial-summed silently</p>
+        {% endif %}
+      </div>
+    </div>
+    <p class="muted">
+      Collector: {% if power.collector.healthy %}<span class="ok">healthy</span>{% elif power.collector.stale %}<span class="warn">STALE</span>{% else %}{{ power.collector.healthy or 'unknown' }}{% endif %}
+      · samples 1h: {{ power.collector.samples_1h or 0 }} · last sample {{ power.collector.last_sample_ts[:16] if power.collector.last_sample_ts else '—' }}
+      · snapshot captured {{ power.captured_at.strftime('%m-%d %H:%M') if power.captured_at }}
+      · rate ${{ power.rate.rate_per_kwh if power.rate and power.rate.rate_per_kwh else '?' }}/kWh
+      · <a href="/api/v1/power/summary?refresh=1">refresh now (JSON)</a>
+    </p>
+    <p class="muted">{{ power.note }}</p>
+  {% else %}
+  <p class="notice warn">No facility snapshot ingested yet — call <code>GET /api/v1/power/summary?refresh=1</code>. Stale/absent power is NEVER shown as 0 (§17).</p>
+  {% endif %}
+</section>
+
 <form method="get" action="/ui/usage" class="filter-form">
   <label>Work <input name="work_item_id" value="{{ f.work_item_id or '' }}" placeholder="work item id"></label>
   <label>Agent <input name="agent_id" value="{{ f.agent_id or '' }}" placeholder="agent id"></label>
@@ -10,6 +52,11 @@
   <button type="submit">Apply</button>
   <a class="muted" href="/ui/usage">clear</a>
 </form>
+
+<section class="cards">
+  <div class="card"><h2>Cloud tokens ({{ hours }}h)</h2>
+    <p class="big">{{ usage_total_tokens }}</p></div>
+</section>
 
 <section class="cards">
   <div class="card"><h2>Sessions</h2><p class="big">{{ s.count }}</p>
@@ -23,9 +70,28 @@
     <p class="muted">null when nothing is accepted — never a fabricated zero</p></div>
 </section>
 
+<section class="panel">
+  <h2>By provider ({{ hours }}h window, cloud = ACTUAL)</h2>
+  {% if by_provider %}
+  <table class="data">
+    <thead><tr><th>Provider</th><th>Requests</th><th>Input tokens</th><th>Output tokens</th><th>Cloud cost (actual)</th></tr></thead>
+    <tbody>
+      {% for prov, b in by_provider.items() %}
+      <tr><td>{{ prov }}</td><td>{{ b.requests }}</td><td>{{ b.input_tokens }}</td><td>{{ b.output_tokens }}</td>
+        <td>${{ '%.4f'|format(b.cost) }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <p class="muted">Local inference cost stays ESTIMATE-labeled and is never shown as actual; rollups by agent/work/project/product ride
+  <code>/usage/summary</code> + <code>cost_attribution</code> (§17).</p>
+  {% else %}
+  <p class="muted">No cost_attribution rows in the window.</p>
+  {% endif %}
+</section>
+
 {% if by_model %}
 <section class="panel">
-  <h2>By model</h2>
+  <h2>By model (session telemetry)</h2>
   <table class="data">
     <thead><tr><th>Model</th><th>Sessions</th><th>API tokens</th><th>Est. cost (USD)</th></tr></thead>
     <tbody>

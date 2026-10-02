@@ -8,9 +8,23 @@
 
 <section class="panel">
   <h2>Identity</h2>
-  {% if a.artifact_uid %}<p><strong>Artifact UID:</strong> <code>{{ a.artifact_uid }}</code></p>{% endif %}
-  <p><strong>Internal UUID:</strong> <code>{{ a.artifact_id }}</code></p>
-  <p><code>sha256: {{ a.sha256 }}</code></p>
+  {% if a.artifact_uid %}<p><strong>Artifact UID:</strong> <code>{{ a.artifact_uid }}</code> <span class="muted">· stable shareable URL: <code>/ui/artifacts/{{ a.artifact_uid }}</code></span></p>{% endif %}
+  <p><strong>Internal UUID:</strong> <code>{{ a.artifact_id }}</code> <span class="muted">(compatibility alias — resolves in the same URL)</span></p>
+  <p><strong>sha256:</strong> <code>{{ a.sha256 }}</code> <span class="muted">(short: <code>{{ a.sha256[:8] }}</code>)</span></p>
+  <p><strong>Size:</strong> {{ a.size }} bytes &middot; <strong>Type:</strong> {{ a.artifact_type }}</p>
+</section>
+
+<section class="panel">
+  <h2>Links</h2>
+  <table class="data">
+    <tbody>
+      <tr><th>Work item</th><td>{% if a.work_item_id %}<a href="/ui/work/{{ a.work_item_id }}"><code>{{ a.work_uid or a.work_item_id[:8] }}</code></a>{% else %}—{% endif %}</td></tr>
+      <tr><th>Project</th><td>{% if a.project %}<a href="/ui/projects/{{ a.project_id }}">{{ a.project }}</a>{% else %}—{% endif %}</td></tr>
+      <tr><th>Product</th><td>{% if a.product %}<a href="/ui/products/{{ a.product_id }}">{{ a.product }}</a>{% else %}—{% endif %}</td></tr>
+      <tr><th>Agent</th><td>{% if a.agent_id %}<a href="/ui/agents/{{ a.agent_id }}">{{ a.agent }}</a>{% else %}—{% endif %}</td></tr>
+      <tr><th>Jira</th><td>{% if a.jira_issue_key %}<code>{{ a.jira_issue_key }}</code>{% if a.jira_url %} <a href="{{ a.jira_url }}">open</a>{% endif %}{% else %}—{% endif %}</td></tr>
+    </tbody>
+  </table>
 </section>
 
 {% if a.bluf %}
@@ -18,13 +32,14 @@
 {% endif %}
 
 <section class="panel">
-  <h2>Content</h2>
+  <h2>Content (Markdown)</h2>
   <pre style="white-space: pre-wrap;">{{ a.content }}</pre>
 </section>
 
 <section class="panel">
   <div class="button-row">
     <a class="button" href="/ui/artifacts/{{ a.artifact_uid or a.artifact_id }}/download">Download .md</a>
+    <a class="button" href="/artifacts/{{ a.artifact_uid or a.artifact_id }}/content?download=true">Raw download (API)</a>
     {% if a.jira_issue_key %}<code>Jira: {{ a.jira_issue_key }}</code>{% endif %}
   </div>
 </section>

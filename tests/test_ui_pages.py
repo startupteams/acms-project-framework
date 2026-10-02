@@ -166,16 +166,17 @@ def test_home_and_system_pages_show_real_data_only(monkeypatch, ui_env):
     resp = _login(monkeypatch, ADMIN_DN)
     home = client.get("/ui/", cookies=resp)
     assert home.status_code == 200
-    # STEA-004 §29: agent status / last contact are REAL now (heartbeat poller);
-    # only cost remains honestly unimplemented (usage pipeline is separate).
-    assert "Not yet implemented" in home.text
-    assert "primary assignment" not in home.text
-    assert "agent status" not in home.text
-    assert "last contact" not in home.text
-    assert "cost" in home.text
-    # fleet cards render real values (never fabricated)
+    # STEA-004 Phase C §18: Home now shows the full operator zones — cost is
+    # REAL (usage pipeline shipped in Phase B), so the old "not yet
+    # implemented" cost notice is gone. Zones render only real data.
+    assert "Work now" in home.text
+    assert "Agent fleet" in home.text
+    assert "Human attention" in home.text
+    assert "Cloud cost today" in home.text
+    assert "Facility power" in home.text
     assert "Needs human" in home.text
-    assert "Agents" in home.text
+    # honesty: no fabricated metrics — absent power shows STALE/never-0 language
+    assert "No facility snapshot" in home.text or "Facility power" in home.text
 
     system = client.get("/ui/system", cookies=resp)
     assert system.status_code == 200

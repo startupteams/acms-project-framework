@@ -12,14 +12,20 @@
     {% if user %}
     <nav>
       <a href="/ui/">Home</a>
+      <a href="/ui/work/board">Work</a>
       <a href="/ui/agents">Agents</a>
-      <a href="/ui/work">Work</a>
       <a href="/ui/products">Products</a>
       <a href="/ui/usage">Usage</a>
       <a href="/ui/inbox">Inbox</a>
       <a href="/ui/artifacts">Artifacts</a>
+      <a href="/ui/attention">Attention</a>
       <a href="/ui/system">System</a>
     </nav>
+    <form class="global-search" method="get" action="/ui/search">
+      <input type="search" name="q" placeholder="Search anything… (Work/Artifact/Agent/Project/Product/Jira)"
+             value="{{ request.query_params.get('q') or '' }}" aria-label="Global search">
+      <button type="submit" aria-label="Search">🔍</button>
+    </form>
     <div class="session">
       <span class="who">{{ user.username }}</span>
       <span class="role role-{{ user.role }}">{{ user.role }}</span>

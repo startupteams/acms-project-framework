@@ -148,3 +148,70 @@ pre.markdown { font-family: ui-monospace, monospace; overflow-x: auto; backgroun
 .sev-low { background: #4b5563; color: #fff; }
 .filters a { margin-right: 0.5rem; }
 .filters a.active { font-weight: 700; text-decoration: underline; }
+
+/* ---- STEA-004 Phase C (operator UI, Release 5) ---- */
+.global-search { display: flex; gap: 0.3rem; margin-left: auto; }
+.global-search input[type="search"] {
+  background: var(--bg); color: var(--text); border: 1px solid var(--border);
+  border-radius: 6px; padding: 0.4rem 0.6rem; width: 240px; font-size: 0.85rem;
+}
+.global-search button { background: var(--accent); border: none; border-radius: 6px;
+  padding: 0.3rem 0.55rem; cursor: pointer; }
+
+/* Work kanban (§12) */
+.board { display: flex; gap: 0.8rem; align-items: flex-start; margin-top: 1rem; overflow-x: auto; padding-bottom: 0.6rem; }
+.board-col { min-width: 240px; flex: 1 0 240px; }
+.board-col-label { font-size: 0.9rem; margin: 0 0 0.5rem; }
+.kanban-card { margin-bottom: 0.6rem; padding: 0.7rem; }
+.kanban-meta { font-size: 0.78rem; margin-top: 0.3rem; }
+.badge-test { color: var(--warn); border-color: var(--warn); font-weight: 700; }
+.badge-jira { color: var(--accent); }
+.work-uid { font-weight: 700; }
+
+/* Canonical handoff (§9) */
+.canonical-handoff { border-left: 4px solid var(--accent); }
+
+/* Inbox nav (§25) */
+.inbox-nav { display: flex; gap: 0.6rem; margin: 0.6rem 0; align-items: center; }
+
+/* Agent chat (§21-§24) */
+.chat-history { max-height: 60vh; overflow-y: auto; }
+.chat-divider { text-align: center; color: var(--muted); font-size: 0.75rem; margin: 0.8rem 0 0.4rem; }
+.chat-bubble { border-radius: 8px; padding: 0.55rem 0.75rem; margin: 0.45rem 0; max-width: 82%; }
+.chat-human { background: rgba(77, 163, 255, 0.12); border: 1px solid rgba(77, 163, 255, 0.4); margin-left: auto; }
+.chat-agent { background: var(--bg); border: 1px solid var(--border); }
+.chat-text { white-space: pre-wrap; font-size: 0.9rem; }
+.chat-meta { color: var(--muted); font-size: 0.7rem; margin-top: 0.25rem; }
+.chat-tool { border: 1px dashed var(--border); border-radius: 6px; margin: 0.4rem 0; padding: 0.35rem 0.6rem; font-size: 0.82rem; }
+.chat-tool summary { cursor: pointer; color: var(--muted); }
+.chat-tool-args pre, .chat-tool-raw { background: var(--bg); border-radius: 6px; padding: 0.5rem;
+  font-size: 0.75rem; overflow-x: auto; white-space: pre-wrap; max-height: 14rem; }
+.chat-form { display: flex; gap: 0.5rem; align-items: flex-start; }
+.autocomplete-wrap { position: relative; flex: 1; }
+.autocomplete-wrap input { width: 100%; background: var(--bg); color: var(--text);
+  border: 1px solid var(--border); border-radius: 6px; padding: 0.55rem 0.7rem; font-size: 0.95rem; }
+.autocomplete-list { position: absolute; top: 100%; left: 0; right: 0; z-index: 10;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 6px; max-height: 220px; overflow-y: auto; }
+.ac-item { padding: 0.45rem 0.7rem; cursor: pointer; font-size: 0.85rem; border-bottom: 1px dashed var(--border); }
+.ac-item:hover { background: rgba(77, 163, 255, 0.12); }
+.button-small { background: var(--accent); color: #002247; font-weight: 600; border: none;
+  border-radius: 6px; padding: 0.25rem 0.55rem; cursor: pointer; font-size: 0.75rem; }
+
+/* Responsive (§28): tables scroll, nav wraps, kanban scrolls horizontally */
+@media (max-width: 900px) {
+  .topbar { flex-wrap: wrap; gap: 0.6rem; }
+  .topbar nav { order: 3; flex-basis: 100%; flex-wrap: wrap; gap: 0.7rem; }
+  .global-search { order: 4; flex-basis: 100%; margin-left: 0; }
+  .global-search input[type="search"] { width: 100%; }
+  main { padding: 0.8rem; }
+  table.data { display: block; overflow-x: auto; }
+  .board { flex-wrap: nowrap; -webkit-overflow-scrolling: touch; }
+  .chat-bubble { max-width: 96%; }
+  button, .button { min-height: 2.2rem; }
+}
+@media (max-width: 640px) {
+  .cards { grid-template-columns: 1fr 1fr; }
+}
+@media (max-width: 420px) {
+  .cards { grid-template-columns: 1fr; }
+}

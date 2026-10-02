@@ -141,14 +141,16 @@ async def usage_page(request: Request,
                      agent_id: str | None = None,
                      model_id: str | None = None,
                      since_days: int | None = None,
+                     hours: int = 24,
                      user=Depends(current_user),
                      db: AsyncSession = Depends(get_session)):
-    """§12.2/§12.3: honest usage view with Product/Work/Agent/model/date filters."""
-    from ..usage_service import usage_summary
+    """§12.2/§12.3 honest usage view + §17 facility electricity cards."""
+    from .operator_data import usage_page_data, usage_session_summary
 
-    s = await usage_summary(db, work_item_id=work_item_id or None,
+    s = await usage_session_summary(db, work_item_id=work_item_id or None,
                             agent_id=agent_id or None, model_id=model_id or None,
                             since_days=since_days)
+    pdata = await usage_page_data(db, hours)
     context = {
         "user": user,
         "s": s["sessions"],
@@ -156,6 +158,11 @@ async def usage_page(request: Request,
         "o": s["outcomes"],
         "f": {"work_item_id": work_item_id, "agent_id": agent_id,
               "model_id": model_id, "since_days": since_days},
+        "power": pdata["power"],
+        "by_provider": pdata["by_provider"],
+        "hours": hours,
+        "usage_total_tokens": (pdata["usage"].get("total_tokens", {}) or {}).get("input", 0)
+                              + (pdata["usage"].get("total_tokens", {}) or {}).get("output", 0),
     }
     return _templates().TemplateResponse(request, "usage.html", context)
 
