@@ -24,8 +24,9 @@ from tests.test_mcp_gateway_w4 import _asyncio_run, FakeAcms, make_identity
 class FakePowerClient(PowerClient):
     """Canned SM pdu/facility surfaces. No network."""
 
-    def __init__(self):
+    def __init__(self, *, stale_cooling: bool = False):
         super().__init__(base_url="http://127.0.0.1:8300", token="fake-sm")
+        self._stale_cooling = stale_cooling
 
     def pdu_list(self):
         return {"api_version": "1.0.0", "status": "ok",
@@ -48,7 +49,13 @@ class FakePowerClient(PowerClient):
                 "notes": "read-only surface"}
 
     def facility_power(self):
+        stale = self._stale_cooling
         return {"error": None, "generated_at": "2026-10-02T13:00:00Z",
+                "totals": {"label": "TOTAL MARION_IA_USA",
+                           "definition": "PDU 151 + PDU 152 + PDU 153 + mini split",
+                           "kwh_24h": 18.065, "cost_usd_24h": 2.906,
+                           "kwh_30d": 335.7, "cost_usd_30d": 53.98,
+                           "incomplete_reason": ("cooling channel stale" if stale else None)},
                 "channels": [
                     {"channel_num": "1", "label": "PDU MIAM-00151 (Server#1 rack circuit)",
                      "avg_watts_1h": 988.6, "kwh_24h": 4.86, "cost_usd_24h": 0.78,
@@ -57,9 +64,8 @@ class FakePowerClient(PowerClient):
                     {"channel_num": "4", "label": "Cooling: 36k 3 Ton mini split",
                      "avg_watts_1h": 1200.0, "kwh_24h": 8.0, "cost_usd_24h": 1.28,
                      "kwh_30d": 150.0, "cost_usd_30d": 24.0,
-                     "last_sample_age_seconds": 4000, "stale": True},
-                ],
-                "total": None, "incomplete_reason": "one or more channels stale"}
+                     "last_sample_age_seconds": 4000, "stale": stale},
+                ]}
 
 
 def build_server_at(tmp_path: Path, fake_power) -> GatewayServer:
@@ -113,7 +119,7 @@ def test_power_domain_absent_when_sm_unconfigured(tmp_path):
 
 
 def test_power_resources_read(tmp_path):
-    server = build_server_at(tmp_path, FakePowerClient())
+    server = build_server_at(tmp_path, FakePowerClient(stale_cooling=True))
     ident = make_identity()
     cur = _read_resource(server, "power.facility.current", ident)
     assert len(cur["pdu_channels"]) == 1 and len(cur["cooling_channels"]) == 1
@@ -209,3 +215,30 @@ def test_cli_mint_agent_inherits_store_default_scopes(tmp_path, monkeypatch):
     assert "acms.read" in out["scopes"] and "acms.write" in out["scopes"]
     # non-executive mint stays a plain worker
     assert out["roles"] == ["worker"]
+
+
+def test_facility_totals_surface_from_sm_totals_dict(tmp_path):
+    """W5 live-found: SM nests the aggregate under totals (dict); the gateway
+    read body['total'] (absent) so TOTAL MARION_IA_USA was always null. With
+    all channels fresh the real totals must surface."""
+    server = build_server_at(tmp_path, FakePowerClient())
+    ident = make_identity()
+    cur = _read_resource(server, "power.facility.current", ident)
+    assert cur["total"]["label"] == "TOTAL MARION_IA_USA"
+    assert cur["total"]["kwh_24h"] == 18.065
+    assert cur["incomplete_reason"] is None
+    hist = _read_resource(server, "power.facility.history", ident)
+    assert hist["total"]["cost_usd_30d"] == 53.98
+
+
+def test_facility_total_withheld_when_channel_stale(tmp_path):
+    """Plan §27: stale channel => TOTAL null WITH explicit incomplete_reason,
+    never zeroed, never fabricated."""
+    server = build_server_at(tmp_path, FakePowerClient(stale_cooling=True))
+    ident = make_identity()
+    cur = _read_resource(server, "power.facility.current", ident)
+    assert cur["total"] is None
+    reason = cur["incomplete_reason"]
+    assert reason and "stale" in reason.lower()
+    hist = _read_resource(server, "power.facility.history", ident)
+    assert hist["total"] is None
