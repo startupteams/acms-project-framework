@@ -149,7 +149,7 @@ class TokenStore:
         # domain services; risk classes + roles gate the dangerous paths (the
         # per-scope split was over-narrow: llm.read is read-only metadata).
         default_scopes = ["acms.read", "acms.write", "llm.read", "llm.write",
-                          "runtime.write"]
+                          "runtime.write", "proxmox.write", "power.read"]
         rec = AgentTokenRecord(
             token_hash=_hash(raw),
             agent_name=agent_name,
