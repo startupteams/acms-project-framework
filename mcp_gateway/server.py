@@ -46,6 +46,7 @@ from .llm_adapter import ServerManagerClient
 from .proxmox_adapter import SandboxClient, sandbox_name
 from .power_adapter import PowerClient
 from .jira_adapter import JiraMcpClient, WORKER_ALLOWED_TRANSITIONS
+from .registry_adapter import MonitoringClient, RegistryClient
 from .manifest import build_context_manifest
 from .models import (
     AuditEntry,
@@ -109,6 +110,12 @@ class GatewayConfig:
     jira_api_token: str = ""
     jira_projects: str = ""           # comma-separated project-key allowlist
     jira_status_mutation_enabled: bool = False  # ACMS-contract global flag
+    # ---- W7 (plan §29) ----
+    registry_base_url: str = ""       # e.g. https://registry.miam.home.arpa
+    registry_token: str = ""
+    kuma_url: str = ""                # e.g. http://127.0.0.1:3001 (on VM119) / http://10.0.20.172:3001
+    kuma_user: str = ""
+    kuma_pass: str = ""
 
 
 def _parse_list(raw: str) -> list[str]:
@@ -231,6 +238,8 @@ class GatewayServer:
                  sandbox_client: "SandboxClient | None" = None,
                  power_client: ServerManagerClient | None = None,
                  jira_client: "JiraMcpClient | None" = None,
+                 registry_client: "RegistryClient | None" = None,
+                 monitoring_client: "MonitoringClient | None" = None,
                  approvals: ApprovalStore | None = None):
         self.config = config
         self.tokens = tokens
@@ -278,6 +287,15 @@ class GatewayServer:
             else None
         )
         self.jira_mutation_enabled = bool(config.jira_status_mutation_enabled)
+        # W7 (plan §29): registry.* + monitoring.* read-only context surfaces.
+        self.svc_registry = registry_client or (
+            RegistryClient(config.registry_base_url, config.registry_token)
+            if (config.registry_base_url and config.registry_token) else None
+        )
+        self.kuma = monitoring_client or (
+            MonitoringClient(config.kuma_url, config.kuma_user, config.kuma_pass)
+            if (config.kuma_url and config.kuma_user and config.kuma_pass) else None
+        )
         self.internal = InternalApi(tokens=tokens, audit=audit, approvals=self.approvals,
                                     internal_token=config.internal_token)
         self.executive_names = set(_parse_list(config.executive_agent_names))
@@ -309,6 +327,7 @@ class GatewayServer:
         self._build_proxmox_capabilities()
         self._build_power_capabilities()
         self._build_jira_capabilities()
+        self._build_registry_monitoring_capabilities()
         self.app = self._wrap_with_identity(self.mcp.streamable_http_app())
 
     # ------------- public ASGI app (adds /health + /internal) -------------
@@ -332,7 +351,9 @@ class GatewayServer:
                                    + (["github"] if outer_app.github else [])
                                    + (["proxmox"] if outer_app.sandbox else [])
                                    + (["power"] if outer_app.power else [])
-                                   + (["jira"] if outer_app.jira else []),
+                                   + (["jira"] if outer_app.jira else [])
+                                   + (["registry"] if outer_app.svc_registry else [])
+                                   + (["monitoring"] if outer_app.kuma else []),
                     }).encode()
                     await send({
                         "type": "http.response.start",
@@ -2552,6 +2573,224 @@ class GatewayServer:
                     "required": ["template_key", "reason"]},
                    template_clone_request, RiskClass.SENSITIVE_WRITE,
                    roles={"executive", "infrastructure_admin"})
+
+    # ------------- W7: registry.* + monitoring.* (plan §29) -------------
+
+    def _build_registry_monitoring_capabilities(self) -> None:
+        """Read-only context surfaces (plan §29): registry service catalog +
+        Uptime Kuma monitor status. Writes are DENIED BY ABSENCE (no tool is
+        registered for any role) — registry/Kuma provide context and
+        observability, never authorization. Auth (service id + token) is
+        gateway-held; workers see honest projections.
+        """
+        reg = self.svc_registry
+        mon = self.kuma
+        if reg is None and mon is None:
+            return
+
+        def _require_registry():
+            if self.svc_registry is None:
+                raise DomainUnavailableError(
+                    "registry domain not configured (REGISTRY_BASE_URL/TOKEN missing)")
+            return self.svc_registry
+
+        def _require_monitoring():
+            if self.kuma is None:
+                raise DomainUnavailableError(
+                    "monitoring domain not configured (KUMA_URL/USER/PASS missing)")
+            return self.kuma
+
+        # ---- resources (READ) ----
+
+        def r_services_list(identity, uri_params):
+            services = _require_registry().list_services()
+            return {"count": len(services),
+                    "services": [{"id": s.get("id"), "name": s.get("name"),
+                                  "category": s.get("category"),
+                                  "host": s.get("host"), "guest": s.get("guest"),
+                                  "url": s.get("url"),
+                                  "health_url": s.get("health_url"),
+                                  "state": s.get("state"),
+                                  "tags": s.get("tags")}
+                                 for s in services]}
+
+        def r_service_get(identity, uri_params):
+            sid = (uri_params or {}).get("service_id") or ""
+            if not sid:
+                raise ValidationError_("service_id is required")
+            s = _require_registry().get_service(sid)
+            out = {"service": {k: s.get(k) for k in (
+                "id", "name", "category", "host", "guest", "url", "health_url",
+                "state", "managed", "tags", "source", "updated")}}
+            # honest dependency view: registry records carry no dependency graph
+            # yet — surface the co-hosted guests + tags as the current best hint
+            out["dependencies"] = {"note": "registry schema has no dependency "
+                                           "graph yet; below = same-host services",
+                                   "same_host": [
+                                       {"id": x.get("id"), "guest": x.get("guest")}
+                                       for x in _require_registry().list_services()
+                                       if x.get("host") == s.get("host")
+                                       and x.get("id") != s.get("id")]}
+            return out
+
+        def r_dependencies_get(identity, uri_params):
+            sid = (uri_params or {}).get("service_id") or ""
+            if not sid:
+                raise ValidationError_("service_id is required")
+            s = _require_registry().get_service(sid)
+            return {"service_id": s.get("id"),
+                    "note": "no dependency graph in the registry schema yet",
+                    "same_host": [
+                        {"id": x.get("id"), "guest": x.get("guest")}
+                        for x in _require_registry().list_services()
+                        if x.get("host") == s.get("host") and x.get("id") != s.get("id")]}
+
+        def r_monitoring_status(identity, uri_params):
+            monitors = _require_monitoring().list_monitors()
+            # Kuma active is 0/1 — treat falsy as disabled (0 is not False in Python)
+            up = len([m for m in monitors if m.get("active")])
+            return {"monitor_count": len(monitors),
+                    "active": up,
+                    "disabled": len(monitors) - up,
+                    "monitors": monitors,
+                    "note": "read-only view; monitor mutations never exposed"}
+
+        def r_monitor_get(identity, uri_params):
+            mid = (uri_params or {}).get("monitor_id") or ""
+            if not mid:
+                raise ValidationError_("monitor_id is required")
+            m = _require_monitoring().get_monitor(mid)
+            return {"monitor": m}
+
+        def r_incidents(identity, uri_params):
+            return {"incidents": _require_monitoring().incidents(),
+                    "note": "down/disabled monitors; full incident history stays "
+                            "in Kuma (read-only boundary)"}
+
+        def _register_rm_resource(name, uri, resolver, description):
+            cap = Capability(
+                name=name,
+                domain="registry" if name.startswith("registry.") else "monitoring",
+                risk=RiskClass.READ,
+                roles={"worker", "reviewer", "project_manager", "executive",
+                       "infrastructure_admin", "observer"},
+                scopes={"registry.read"} if name.startswith("registry.")
+                else {"monitoring.read"},
+                description=description, kind="resource", uri_template=uri,
+            )
+            from mcp.server.fastmcp.resources.templates import FunctionResource
+            if _TEMPLATE_PARAM_SEARCH.search(uri) is None:
+                def _static_resolver(identity):
+                    return resolver(identity, {})
+                cap.handler = lambda ident, ctx=None, _r=_static_resolver: _async_result(_r(ident))
+
+                async def _static():
+                    identity = CURRENT_IDENTITY.get()
+                    entry = AuditEntry(
+                        agent_name=identity.agent_name if identity else "(none)",
+                        token_id=identity.token_id if identity else "",
+                        token_kind=identity.token_kind.value if identity else "agent",
+                        work_uid=getattr(identity, "work_uid", None),
+                        domain=cap.domain, name=cap.name, entry_kind="resource",
+                        risk_class=cap.risk, status="ok",
+                    )
+                    start = time.monotonic()
+                    try:
+                        if identity is None:
+                            raise UnauthenticatedError("no identity bound")
+                        cap.authorize(identity)
+                        result = _static_resolver(identity)
+                        entry.duration_ms = int((time.monotonic() - start) * 1000)
+                        self.audit.record(entry)
+                        return result
+                    except GatewayError as exc:
+                        entry.duration_ms = int((time.monotonic() - start) * 1000)
+                        entry.status = "denied" if exc.error_type in {
+                            GatewayErrorType.ROLE_REQUIRED,
+                            GatewayErrorType.SCOPE_REQUIRED,
+                            GatewayErrorType.OUT_OF_SCOPE,
+                            GatewayErrorType.DESTRUCTIVE_DENY,
+                            GatewayErrorType.APPROVAL_REQUIRED} else "error"
+                        entry.error_type = exc.error_type.value
+                        entry.detail = exc.detail
+                        self.audit.record(entry)
+                        exc.args = (f"{exc.error_type.value}: {exc.detail}",)
+                        raise
+                self.mcp._resource_manager.add_resource(
+                    FunctionResource.from_function(_static, uri=uri, name=dotted(name),
+                                                   description=description,
+                                                   mime_type="application/json"))
+            else:
+                async def tpl_fn(**kwargs):
+                    kwargs = {k: urllib.parse.unquote(v) for k, v in kwargs.items()}
+                    identity = CURRENT_IDENTITY.get()
+                    entry = AuditEntry(
+                        agent_name=identity.agent_name if identity else "(none)",
+                        token_id=identity.token_id if identity else "",
+                        token_kind=identity.token_kind.value if identity else "agent",
+                        work_uid=getattr(identity, "work_uid", None),
+                        domain=cap.domain, name=cap.name, entry_kind="resource",
+                        risk_class=cap.risk, status="ok",
+                        args_hash=hash_args(kwargs),
+                    )
+                    start = time.monotonic()
+                    try:
+                        if identity is None:
+                            raise UnauthenticatedError("no identity bound")
+                        cap.authorize(identity)
+                        result = resolver(identity, kwargs)
+                        entry.duration_ms = int((time.monotonic() - start) * 1000)
+                        self.audit.record(entry)
+                        return result
+                    except GatewayError as exc:
+                        entry.duration_ms = int((time.monotonic() - start) * 1000)
+                        entry.status = "denied" if exc.error_type in {
+                            GatewayErrorType.ROLE_REQUIRED,
+                            GatewayErrorType.SCOPE_REQUIRED,
+                            GatewayErrorType.OUT_OF_SCOPE,
+                            GatewayErrorType.DESTRUCTIVE_DENY,
+                            GatewayErrorType.APPROVAL_REQUIRED} else "error"
+                        entry.error_type = exc.error_type.value
+                        entry.detail = exc.detail
+                        self.audit.record(entry)
+                        exc.args = (f"{exc.error_type.value}: {exc.detail}",)
+                        raise
+                self.mcp._resource_manager.add_template(
+                    tpl_fn, uri_template=uri, name=dotted(name),
+                    description=description, mime_type="application/json")
+            if _TEMPLATE_PARAM_SEARCH.search(uri) is None:
+                async def _direct_static(identity, params=None, _r=_static_resolver, _cap=cap):
+                    _cap.authorize(identity)
+                    return _r(identity)
+                cap.handler = _direct_static
+            else:
+                async def _direct_tpl(identity, params=None, _resolver=resolver, _cap=cap):
+                    _cap.authorize(identity)
+                    return _resolver(identity, {k: urllib.parse.unquote(v) for k, v in (params or {}).items()})
+                cap.handler = _direct_tpl
+            self.registry.register(cap)
+
+        if reg is not None:
+            _register_rm_resource(
+                "registry.services.list", "registry://services", r_services_list,
+                "MIAM Service Registry catalog (read-only context).")
+            _register_rm_resource(
+                "registry.service.get", "registry://service/{service_id}", r_service_get,
+                "One registry service record (read-only).")
+            _register_rm_resource(
+                "registry.dependencies.get", "registry://service/{service_id}/dependencies",
+                r_dependencies_get,
+                "Dependency view for one service (same-host hint; no graph schema yet).")
+        if mon is not None:
+            _register_rm_resource(
+                "monitoring.status", "monitoring://status", r_monitoring_status,
+                "Uptime Kuma monitor list (read-only).")
+            _register_rm_resource(
+                "monitoring.monitor.get", "monitoring://monitor/{monitor_id}",
+                r_monitor_get, "One Kuma monitor (read-only).")
+            _register_rm_resource(
+                "monitoring.incidents", "monitoring://incidents", r_incidents,
+                "Down/disabled monitors (incident view; read-only).")
 
 # ---------------- argument plumbing helpers ----------------
 
