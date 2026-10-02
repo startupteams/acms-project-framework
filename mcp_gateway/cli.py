@@ -51,6 +51,13 @@ def _config_from_env() -> GatewayConfig:
                                       "/var/lib/miam-mcp-gateway/approvals.sqlite3"),
         github_token=os.environ.get("MCP_GATEWAY_GITHUB_TOKEN", ""),
         github_repos=os.environ.get("MCP_GATEWAY_GITHUB_REPOS", ""),
+        # W6 (plan §28)
+        jira_base_url=os.environ.get("MCP_GATEWAY_JIRA_BASE_URL", ""),
+        jira_email=os.environ.get("MCP_GATEWAY_JIRA_EMAIL", ""),
+        jira_api_token=os.environ.get("MCP_GATEWAY_JIRA_API_TOKEN", ""),
+        jira_projects=os.environ.get("MCP_GATEWAY_JIRA_PROJECTS", ""),
+        jira_status_mutation_enabled=(
+            os.environ.get("MCP_GATEWAY_JIRA_STATUS_MUTATION_ENABLED", "0") == "1"),
     )
 
 

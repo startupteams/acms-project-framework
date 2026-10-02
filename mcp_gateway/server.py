@@ -36,6 +36,7 @@ from .errors import (
     NotFoundError,
     OutOfScopeError,
     RevokedAgentTokenError,
+    RoleRequiredError,
     UnauthenticatedError,
     ValidationError_,
 )
@@ -44,6 +45,7 @@ from .github_adapter import GithubClient, branch_owner, owned_branch
 from .llm_adapter import ServerManagerClient
 from .proxmox_adapter import SandboxClient, sandbox_name
 from .power_adapter import PowerClient
+from .jira_adapter import JiraMcpClient, WORKER_ALLOWED_TRANSITIONS
 from .manifest import build_context_manifest
 from .models import (
     AuditEntry,
@@ -101,6 +103,12 @@ class GatewayConfig:
     # (llm_base_url/llm_token); separate flag because the domain is optional
     # and can be disabled independently.
     proxmox_enabled: bool = True      # absent client => domain absent (health omits it)
+    # ---- W6 (plan §28) ----
+    jira_base_url: str = ""           # e.g. https://startupteams.atlassian.net
+    jira_email: str = ""
+    jira_api_token: str = ""
+    jira_projects: str = ""           # comma-separated project-key allowlist
+    jira_status_mutation_enabled: bool = False  # ACMS-contract global flag
 
 
 def _parse_list(raw: str) -> list[str]:
@@ -222,6 +230,7 @@ class GatewayServer:
                  github_client: GithubClient | None = None,
                  sandbox_client: "SandboxClient | None" = None,
                  power_client: ServerManagerClient | None = None,
+                 jira_client: "JiraMcpClient | None" = None,
                  approvals: ApprovalStore | None = None):
         self.config = config
         self.tokens = tokens
@@ -260,6 +269,15 @@ class GatewayServer:
             PowerClient(config.llm_base_url, config.llm_token, timeout_seconds=45)
             if (config.llm_base_url and config.llm_token) else None
         )
+        # W6 (plan §28): jira.* rides the gateway's own Jira REST credential.
+        self.jira = jira_client or (
+            JiraMcpClient(config.jira_base_url, config.jira_email,
+                          config.jira_api_token,
+                          allowed_projects=config.jira_projects)
+            if (config.jira_base_url and config.jira_email and config.jira_api_token)
+            else None
+        )
+        self.jira_mutation_enabled = bool(config.jira_status_mutation_enabled)
         self.internal = InternalApi(tokens=tokens, audit=audit, approvals=self.approvals,
                                     internal_token=config.internal_token)
         self.executive_names = set(_parse_list(config.executive_agent_names))
@@ -290,6 +308,7 @@ class GatewayServer:
         self._build_github_capabilities()
         self._build_proxmox_capabilities()
         self._build_power_capabilities()
+        self._build_jira_capabilities()
         self.app = self._wrap_with_identity(self.mcp.streamable_http_app())
 
     # ------------- public ASGI app (adds /health + /internal) -------------
@@ -312,7 +331,8 @@ class GatewayServer:
                         "domains": ["acms", "llm", "runtime"]
                                    + (["github"] if outer_app.github else [])
                                    + (["proxmox"] if outer_app.sandbox else [])
-                                   + (["power"] if outer_app.power else []),
+                                   + (["power"] if outer_app.power else [])
+                                   + (["jira"] if outer_app.jira else []),
                     }).encode()
                     await send({
                         "type": "http.response.start",
@@ -2197,6 +2217,341 @@ class GatewayServer:
                      "required": ["target", "reason"]},
                     pdu_request_reboot, RiskClass.SENSITIVE_WRITE,
                     roles={"executive", "infrastructure_admin"})
+
+    # ------------- W6: jira.* capability construction (plan §28) -------------
+
+    def _build_jira_capabilities(self) -> None:
+        """jira.* resources + worker tools (plan §28).
+
+        Scope rule: non-executive identities may read/write ONLY the issue key
+        bound to their assignment (assignment-token jira_issue_key, or the
+        ACTIVE assignment's linked Work item). Transitions enforce the plan
+        §28 policy: workers TO START->IN PROGRESS / IN PROGRESS->IN REVIEW
+        only; BLOCKED is executive/infrastructure_admin-only. The global
+        mutation flag (ACMS_JIRA_STATUS_MUTATION_ENABLED contract) gates ALL
+        transitions — fail-closed when disabled (STNA-88 posture).
+        """
+        jira = self.jira
+        acms = self.acms
+        if jira is None:
+            return  # jira domain absent when Jira env unconfigured/disabled
+
+        mutation_enabled = self.jira_mutation_enabled
+
+        def _require_jira():
+            if self.jira is None:
+                raise DomainUnavailableError(
+                    "jira domain not configured (JIRA_BASE_URL/EMAIL/TOKEN missing)")
+            return self.jira
+
+        # ---- assignment binding: which issue keys may this identity touch? ----
+
+        def _allowed_issue_keys(identity: CallIdentity) -> set[str] | None:
+            """None = executive/infra-admin (broader); else the bound key set."""
+            if identity.has_role("executive", "infrastructure_admin"):
+                return None
+            keys: set[str] = set()
+            if getattr(identity, "jira_issue_key", None):
+                keys.add(str(identity.jira_issue_key).upper())
+            if identity.is_assignment_scoped and identity.work_uid:
+                work = acms.find_work_item(identity.work_uid)
+                if work and work.get("jira_issue_key"):
+                    keys.add(str(work["jira_issue_key"]).upper())
+            if identity.acms_agent_id:
+                assignment = acms.active_assignment(identity.acms_agent_id)
+                if assignment:
+                    work = acms.find_work_item(assignment.get("work_item_id", ""))
+                    if work and work.get("jira_issue_key"):
+                        keys.add(str(work["jira_issue_key"]).upper())
+            return keys
+
+        def _assert_issue_scope(identity: CallIdentity, issue_key: str) -> None:
+            allowed = _allowed_issue_keys(identity)
+            if allowed is None:
+                return  # executive/admin: broader reads per plan §17
+            if not allowed:
+                raise OutOfScopeError(
+                    "no assignment binding; jira.* requires an ACTIVE assignment "
+                    "linked to a Jira issue (or an assignment token with jira_issue_key)")
+            if str(issue_key).upper() not in allowed:
+                raise OutOfScopeError(
+                    f"issue {issue_key} is outside your assignment scope "
+                    f"({sorted(allowed)})")
+
+        # ---- resources (READ) ----
+
+        def r_issue_get(identity, uri_params):
+            key = (uri_params or {}).get("issue_key") or ""
+            if not key:
+                raise ValidationError_("issue_key is required")
+            _assert_issue_scope(identity, key)
+            return {"issue": _require_jira().issue_brief(key)}
+
+        def r_comments_list(identity, uri_params):
+            key = (uri_params or {}).get("issue_key") or ""
+            if not key:
+                raise ValidationError_("issue_key is required")
+            _assert_issue_scope(identity, key)
+            return _require_jira().get_comments(key)
+
+        def r_status_get(identity, uri_params):
+            key = (uri_params or {}).get("issue_key") or ""
+            if not key:
+                raise ValidationError_("issue_key is required")
+            _assert_issue_scope(identity, key)
+            brief = _require_jira().issue_brief(key)
+            return {"issue_key": brief["key"], "status": brief["status"],
+                    "status_category": brief["status_category"],
+                    "mutation_enabled": mutation_enabled,
+                    "worker_allowed_transitions": {
+                        "TO START": ["IN PROGRESS"],
+                        "IN PROGRESS": ["IN REVIEW"],
+                        "BLOCKED": "executive/infrastructure_admin only",
+                    }}
+
+        def r_template_get(identity, uri_params):
+            key = (uri_params or {}).get("issue_key") or ""
+            if not key:
+                raise ValidationError_("issue_key is required")
+            _assert_issue_scope(identity, key)
+            brief = _require_jira().issue_brief(key)
+            return {"template_source": brief["key"],
+                    "summary": brief["summary"],
+                    "description": brief["description"],
+                    "issue_type": brief["issue_type"],
+                    "note": "future authorized AI-created tickets must CLONE this "
+                            "template and pass the ACMS section validator"}
+
+        def _register_jira_resource(name, uri, resolver, description):
+            cap = Capability(
+                name=name, domain="jira", risk=RiskClass.READ,
+                roles={"worker", "reviewer", "project_manager", "executive",
+                       "infrastructure_admin", "observer"},
+                scopes={"jira.read"},
+                description=description, kind="resource", uri_template=uri,
+            )
+            from mcp.server.fastmcp.resources.templates import FunctionResource
+            if _TEMPLATE_PARAM_SEARCH.search(uri) is None:
+                def _static_resolver(identity):
+                    return resolver(identity, {})
+                cap.handler = lambda ident, ctx=None, _r=_static_resolver: _async_result(_r(ident))
+
+                async def _static():
+                    identity = CURRENT_IDENTITY.get()
+                    entry = AuditEntry(
+                        agent_name=identity.agent_name if identity else "(none)",
+                        token_id=identity.token_id if identity else "",
+                        token_kind=identity.token_kind.value if identity else "agent",
+                        work_uid=getattr(identity, "work_uid", None),
+                        domain=cap.domain, name=cap.name, entry_kind="resource",
+                        risk_class=cap.risk, status="ok",
+                    )
+                    start = time.monotonic()
+                    try:
+                        if identity is None:
+                            raise UnauthenticatedError("no identity bound")
+                        cap.authorize(identity)
+                        result = _static_resolver(identity)
+                        entry.duration_ms = int((time.monotonic() - start) * 1000)
+                        self.audit.record(entry)
+                        return result
+                    except GatewayError as exc:
+                        entry.duration_ms = int((time.monotonic() - start) * 1000)
+                        entry.status = "denied" if exc.error_type in {
+                            GatewayErrorType.ROLE_REQUIRED,
+                            GatewayErrorType.SCOPE_REQUIRED,
+                            GatewayErrorType.OUT_OF_SCOPE,
+                            GatewayErrorType.DESTRUCTIVE_DENY,
+                            GatewayErrorType.APPROVAL_REQUIRED} else "error"
+                        entry.error_type = exc.error_type.value
+                        entry.detail = exc.detail
+                        self.audit.record(entry)
+                        exc.args = (f"{exc.error_type.value}: {exc.detail}",)
+                        raise
+                self.mcp._resource_manager.add_resource(
+                    FunctionResource.from_function(_static, uri=uri, name=dotted(name),
+                                                   description=description,
+                                                   mime_type="application/json"))
+            else:
+                async def tpl_fn(**kwargs):
+                    kwargs = {k: urllib.parse.unquote(v) for k, v in kwargs.items()}
+                    identity = CURRENT_IDENTITY.get()
+                    entry = AuditEntry(
+                        agent_name=identity.agent_name if identity else "(none)",
+                        token_id=identity.token_id if identity else "",
+                        token_kind=identity.token_kind.value if identity else "agent",
+                        work_uid=getattr(identity, "work_uid", None),
+                        domain=cap.domain, name=cap.name, entry_kind="resource",
+                        risk_class=cap.risk, status="ok",
+                        args_hash=hash_args(kwargs),
+                    )
+                    start = time.monotonic()
+                    try:
+                        if identity is None:
+                            raise UnauthenticatedError("no identity bound")
+                        cap.authorize(identity)
+                        result = resolver(identity, kwargs)
+                        entry.duration_ms = int((time.monotonic() - start) * 1000)
+                        self.audit.record(entry)
+                        return result
+                    except GatewayError as exc:
+                        entry.duration_ms = int((time.monotonic() - start) * 1000)
+                        entry.status = "denied" if exc.error_type in {
+                            GatewayErrorType.ROLE_REQUIRED,
+                            GatewayErrorType.SCOPE_REQUIRED,
+                            GatewayErrorType.OUT_OF_SCOPE,
+                            GatewayErrorType.DESTRUCTIVE_DENY,
+                            GatewayErrorType.APPROVAL_REQUIRED} else "error"
+                        entry.error_type = exc.error_type.value
+                        entry.detail = exc.detail
+                        self.audit.record(entry)
+                        exc.args = (f"{exc.error_type.value}: {exc.detail}",)
+                        raise
+                self.mcp._resource_manager.add_template(
+                    tpl_fn, uri_template=uri, name=dotted(name),
+                    description=description, mime_type="application/json")
+            if _TEMPLATE_PARAM_SEARCH.search(uri) is None:
+                async def _direct_static(identity, params=None, _r=_static_resolver, _cap=cap):
+                    _cap.authorize(identity)
+                    return _r(identity)
+                cap.handler = _direct_static
+            else:
+                async def _direct_tpl(identity, params=None, _resolver=resolver, _cap=cap):
+                    _cap.authorize(identity)
+                    return _resolver(identity, {k: urllib.parse.unquote(v) for k, v in (params or {}).items()})
+                cap.handler = _direct_tpl
+            self.registry.register(cap)
+
+        _register_jira_resource(
+            "jira.issue.get", "jira://issue/{issue_key}", r_issue_get,
+            "Read one Jira issue (assignment-scoped; executives broader).")
+        _register_jira_resource(
+            "jira.comments.list", "jira://issue/{issue_key}/comments", r_comments_list,
+            "List comments on one Jira issue (assignment-scoped).")
+        _register_jira_resource(
+            "jira.status.get", "jira://issue/{issue_key}/status", r_status_get,
+            "Current Jira status + the caller's allowed transition map (plan §28 policy).")
+        _register_jira_resource(
+            "jira.template.get", "jira://template/{issue_key}", r_template_get,
+            "Template-fidelity view of a Jira issue (STNA-86 clone source).")
+
+        # ---- tools ----
+
+        def _jira_tool(name, desc, schema, fn, risk, *, roles=None):
+            wrapped = _bind_args(fn)
+            cap = Capability(
+                name=name, domain="jira", risk=risk,
+                roles=roles if roles is not None else {
+                    "worker", "reviewer", "project_manager", "executive",
+                    "infrastructure_admin"},
+                scopes={"jira.write"} if risk != RiskClass.READ else {"jira.read"},
+                description=desc, timeout_seconds=30, side_effect="external",
+                meta={"input_schema": schema},
+            )
+            cap.handler = wrapped
+            self._register_tool(cap)
+
+        async def comment_add(identity, ctx, issue_key: str, body_markdown: str):
+            _assert_issue_scope(identity, issue_key)
+            return _require_jira().add_comment(issue_key, body_markdown)
+
+        async def description_update(identity, ctx, issue_key: str, description_markdown: str):
+            _assert_issue_scope(identity, issue_key)
+            return _require_jira().update_description(issue_key, description_markdown)
+
+        async def artifact_link(identity, ctx, issue_key: str, artifact_uid: str, url: str):
+            _assert_issue_scope(identity, issue_key)
+            body = (f"## ACMS artifact link\n\n"
+                    f"- **Artifact UID:** `{artifact_uid}`\n"
+                    f"- **URL:** {url}\n")
+            return _require_jira().add_comment(issue_key, body)
+
+        async def transition_request(identity, ctx, issue_key: str, target_status: str):
+            target = (target_status or "").strip()
+            if not target:
+                raise ValidationError_("target_status is required")
+            _assert_issue_scope(identity, issue_key)
+            brief = _require_jira().issue_brief(issue_key)
+            current = (brief.get("status") or "").lower()
+            if target.upper() == "BLOCKED" and not identity.has_role(
+                    "executive", "infrastructure_admin"):
+                # plan §28: ordinary workers NEVER move Jira to BLOCKED — keep
+                # IN PROGRESS, comment the blocker, update ACMS Work, raise Inbox.
+                raise RoleRequiredError(
+                    "ordinary workers must NOT transition Jira to BLOCKED; keep the "
+                    "issue IN PROGRESS, add a blocker comment, update the ACMS Work "
+                    "state and raise an Inbox item (executive/authorized role "
+                    "transitions to BLOCKED)")
+            if not mutation_enabled:
+                # ACMS-contract global flag: fail-closed, actionable (STNA-88 posture)
+                raise ConflictError(
+                    "Jira status mutation is disabled "
+                    "(ACMS_JIRA_STATUS_MUTATION_ENABLED=false at the gateway); "
+                    "post comments only — ask the operator to enable transitions")
+            allowed_next = WORKER_ALLOWED_TRANSITIONS.get(current)
+            if (not identity.has_role("executive", "infrastructure_admin")
+                    and allowed_next is not None
+                    and target.lower() not in allowed_next):
+                raise RoleRequiredError(
+                    f"plan §28 transition policy: from '{current}' a worker may "
+                    f"transition only to {sorted(allowed_next)} (requested '{target}')")
+            return _require_jira().transition(issue_key, target)
+
+        async def template_clone_request(identity, ctx, template_key: str, reason: str):
+            if len((reason or "")) < 8:
+                raise ValidationError_("reason (min 8 chars) is required")
+            args_hash = hash_args({"template_key": template_key, "reason": reason})
+            out = self.approvals.create(agent_name=identity.agent_name,
+                                        capability="jira.template.clone_request",
+                                        reason=f"template={template_key}; {reason}",
+                                        args_hash=args_hash)
+            return {"approval_request_id": out["request_id"], "status": out["status"],
+                    "note": "template clones are authorized operations; executive "
+                            "decision required before ACMS clones the template"}
+
+        _jira_tool("jira.comment.add",
+                   "Add a comment to the assignment's Jira issue (SAFE_WRITE; "
+                   "assignment-scoped).",
+                   {"type": "object",
+                    "properties": {"issue_key": {"type": "string", "minLength": 3},
+                                   "body_markdown": {"type": "string", "minLength": 1}},
+                    "required": ["issue_key", "body_markdown"]},
+                   comment_add, RiskClass.SAFE_WRITE)
+        _jira_tool("jira.description.update",
+                   "Update the assignment's Jira issue description (SAFE_WRITE; "
+                   "assignment-scoped).",
+                   {"type": "object",
+                    "properties": {"issue_key": {"type": "string", "minLength": 3},
+                                   "description_markdown": {"type": "string", "minLength": 1}},
+                    "required": ["issue_key", "description_markdown"]},
+                   description_update, RiskClass.SAFE_WRITE)
+        _jira_tool("jira.artifact.link",
+                   "Post the exact ACMS artifact URL to the assignment's Jira issue "
+                   "(SAFE_WRITE; assignment-scoped).",
+                   {"type": "object",
+                    "properties": {"issue_key": {"type": "string", "minLength": 3},
+                                   "artifact_uid": {"type": "string", "minLength": 3},
+                                   "url": {"type": "string", "minLength": 8}},
+                    "required": ["issue_key", "artifact_uid", "url"]},
+                   artifact_link, RiskClass.SAFE_WRITE)
+        _jira_tool("jira.transition.request",
+                   "Request a Jira status transition through the ACMS policy "
+                   "(workers: TO START->IN PROGRESS, IN PROGRESS->IN REVIEW only; "
+                   "BLOCKED is executive-only; global mutation flag gates all).",
+                   {"type": "object",
+                    "properties": {"issue_key": {"type": "string", "minLength": 3},
+                                   "target_status": {"type": "string", "minLength": 2}},
+                    "required": ["issue_key", "target_status"]},
+                   transition_request, RiskClass.SAFE_WRITE)
+        _jira_tool("jira.template.clone_request",
+                   "Request authorization to clone a Jira template issue "
+                   "(executive; durable approval request — no direct clone).",
+                   {"type": "object",
+                    "properties": {"template_key": {"type": "string", "minLength": 3},
+                                   "reason": {"type": "string", "minLength": 8}},
+                    "required": ["template_key", "reason"]},
+                   template_clone_request, RiskClass.SENSITIVE_WRITE,
+                   roles={"executive", "infrastructure_admin"})
 
 # ---------------- argument plumbing helpers ----------------
 
