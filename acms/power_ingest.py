@@ -31,7 +31,7 @@ from .settings import get_settings
 
 # ---------------------------------------------------------------- ORM model
 
-from sqlalchemy import Float, Integer, String, DateTime  # noqa: E402
+from sqlalchemy import Float, Integer, String, DateTime, Text  # noqa: E402
 from sqlalchemy.orm import Mapped, mapped_column  # noqa: E402
 
 
@@ -43,8 +43,9 @@ class PowerSnapshotRecord(Base):
     snapshot_id: Mapped[str] = mapped_column(String(36), primary_key=True)
     captured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
     source: Mapped[str] = mapped_column(String(32), default="llm-manager-facility")
-    # raw upstream payload (JSON) for audit/replay
-    payload_json: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    # full facility payload for audit/replay (0017: unbounded text — the §17
+    # view rebuilds channels/rate/collector from THIS payload; 4KB app cap)
+    payload_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     # facility aggregates (NULL when stale — never 0)
     total_kwh_24h: Mapped[float | None] = mapped_column(Float, nullable=True)
     total_cost_usd_24h: Mapped[float | None] = mapped_column(Float, nullable=True)

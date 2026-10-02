@@ -77,6 +77,7 @@ def test_migration_chain_matches_orm_models(pg_url):
         import acms.bootstrap_models  # noqa: F401  (product bootstrap, window-5)
         import acms.a2a_models  # noqa: F401  (A2A production path, 2026-10-01)
         import acms.models  # noqa: F401  (agent registry)
+        import acms.power_ingest  # noqa: F401  (facility power, Phase B/C)
 
         eng = sa_async.create_async_engine(pg_url.replace("postgresql://", "postgresql+asyncpg://"))
         drifts = []
