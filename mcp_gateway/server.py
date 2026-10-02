@@ -13,6 +13,7 @@ import contextvars
 import logging
 import time
 import urllib.parse
+import uuid
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
@@ -41,6 +42,7 @@ from .errors import (
 from .internal_api import InternalApi
 from .github_adapter import GithubClient, branch_owner, owned_branch
 from .llm_adapter import ServerManagerClient
+from .proxmox_adapter import SandboxClient, sandbox_name
 from .manifest import build_context_manifest
 from .models import (
     AuditEntry,
@@ -93,6 +95,11 @@ class GatewayConfig:
     # ---- W3 (plan §25) ----
     github_token: str = ""            # GitHub PAT (authority = token's own permissions)
     github_repos: str = ""            # comma-separated owner/name allowlist for agent tokens
+    # ---- W4 (plan §26) ----
+    # Sandbox domain rides the SAME Server Manager machine API as llm.*
+    # (llm_base_url/llm_token); separate flag because the domain is optional
+    # and can be disabled independently.
+    proxmox_enabled: bool = True      # absent client => domain absent (health omits it)
 
 
 def _parse_list(raw: str) -> list[str]:
@@ -212,6 +219,7 @@ class GatewayServer:
                  acms_client: AcmsClient | None = None,
                  llm_client: ServerManagerClient | None = None,
                  github_client: GithubClient | None = None,
+                 sandbox_client: "SandboxClient | None" = None,
                  approvals: ApprovalStore | None = None):
         self.config = config
         self.tokens = tokens
@@ -232,6 +240,14 @@ class GatewayServer:
             GithubClient(config.github_token,
                          repos_allowlist=_parse_list(config.github_repos))
             if config.github_token else None
+        )
+        # W4 (plan §26): sandbox domain rides the SM machine API — same
+        # endpoint as llm.*, dedicated SandboxClient (ARM surface) so the
+        # domains can be gated apart.
+        self.sandbox: SandboxClient | None = sandbox_client or (
+            SandboxClient(config.llm_base_url, config.llm_token)
+            if (config.proxmox_enabled and config.llm_base_url and config.llm_token)
+            else None
         )
         self.internal = InternalApi(tokens=tokens, audit=audit, approvals=self.approvals,
                                     internal_token=config.internal_token)
@@ -261,6 +277,7 @@ class GatewayServer:
         self._build_acms_capabilities()
         self._build_llm_runtime_capabilities()
         self._build_github_capabilities()
+        self._build_proxmox_capabilities()
         self.app = self._wrap_with_identity(self.mcp.streamable_http_app())
 
     # ------------- public ASGI app (adds /health + /internal) -------------
@@ -281,7 +298,8 @@ class GatewayServer:
                         "gateway": "miam-mcp-gateway",
                         "version": __version__,
                         "domains": ["acms", "llm", "runtime"]
-                                   + (["github"] if outer_app.github else []),
+                                   + (["github"] if outer_app.github else [])
+                                   + (["proxmox"] if outer_app.sandbox else []),
                     }).encode()
                     await send({
                         "type": "http.response.start",
@@ -1301,11 +1319,6 @@ class GatewayServer:
             cap.handler = _direct
             self.registry.register(cap)
 
-        def _unquote_params(uri_params):
-            # owner/name URIs arrive percent-encoded through MCP template
-            # matching ({repo} = [^/]+ in the SDK) — decode before validation.
-            return {k: urllib.parse.unquote(v) for k, v in (uri_params or {}).items()}
-
         def r_repo(identity, uri_params):
             uri_params = _unquote_params(uri_params)
             repo = uri_params.get("repo", "")
@@ -1564,7 +1577,324 @@ class GatewayServer:
                   "required": ["repo", "number", "commit_sha", "path", "body"]},
                  review_comment)
 
+    # ------------- Proxmox sandbox capability construction (plan §26) -------------
+
+    def _build_proxmox_capabilities(self) -> None:
+        sbx_client = self.sandbox
+        acms = self.acms
+        approvals = self.approvals
+        if sbx_client is None:
+            return  # proxmox domain absent when unconfigured/disabled (health omits it)
+
+        def _require_sandbox():
+            if sbx_client is None:
+                raise DomainUnavailableError(
+                    "proxmox domain not configured (SM base/token missing or disabled)")
+            return sbx_client
+
+        def _caller_work_uid(identity: CallIdentity) -> str:
+            """The work_uid this identity may create sandboxes against."""
+            if identity.is_assignment_scoped and identity.work_uid:
+                return identity.work_uid
+            if identity.acms_agent_id:
+                assignment = acms.active_assignment(identity.acms_agent_id)
+                if assignment:
+                    work = acms.find_work_item(assignment.get("work_item_id", ""))
+                    if work and work.get("work_uid"):
+                        return work.get("work_uid", "")
+            raise OutOfScopeError(
+                "no assignment-bound work item; sandbox operations require one")
+
+        def _assert_own_sandbox(identity: CallIdentity, runtime: dict) -> None:
+            """Ownership gate: the runtime must be THIS agent's sandbox for THIS
+            work_uid (name determinism + ownership_meta kind tag)."""
+            if runtime.get("runtime_class") != "sandbox":
+                raise OutOfScopeError("runtime is not a sandbox")
+            expected = sandbox_name(identity.agent_name, _caller_work_uid(identity))
+            if (runtime.get("name") or "") != expected:
+                raise OutOfScopeError(
+                    f"sandbox not owned by this agent/work: {runtime.get('name')!r} "
+                    f"(expected {expected!r})")
+
+        # ---- resource (READ): own sandbox status ----
+
+        def r_sandbox_status(identity, uri_params):
+            _ = uri_params
+            client = _require_sandbox()
+            rows = client.list_runtimes()  # name-match enforces ownership below
+            own_name = sandbox_name(identity.agent_name, _caller_work_uid(identity))
+            own = [x for x in rows if x.get("runtime_class") == "sandbox"
+                   and x.get("name") == own_name]
+            return {"sandbox_name": own_name, "sandboxes": own,
+                    "note": "own sandboxes only (workers); executive fleet view is a separate tool"}
+
+        # ---- tools (SENSITIVE_WRITE; ownership enforced) ----
+
+        async def sandbox_create(identity, ctx, ttl_hours: int | None = None,
+                                 reason: str = ""):
+            client = _require_sandbox()
+            work_uid = _caller_work_uid(identity)
+            # Correlation id: the ACMS agent id when the identity carries one
+            # (agent tokens); for assignment-scoped callers a deterministic
+            # UUID5 of (work_uid, agent_name) — SM treats acms_agent_id as a
+            # correlation UUID without FK (§1), so determinism > fabrication.
+            corr = identity.acms_agent_id
+            if not corr:
+                import uuid as _uuid
+                corr = str(_uuid.uuid5(_uuid.NAMESPACE_URL,
+                                       f"sandbox:{work_uid}:{identity.agent_name}"))
+            if len((reason or "")) < 4:
+                raise ValidationError_("reason is required (min 4 chars)")
+            name = sandbox_name(identity.agent_name, work_uid)
+            request_id = f"sbx-{uuid.uuid4().hex[:24]}"
+            job = client.create_sandbox(
+                acms_agent_id=corr, request_id=request_id,
+                name=name, ttl_hours=ttl_hours)
+            return {
+                "sandbox_name": name, "request_id": request_id,
+                "job": job, "ttl_hours": ttl_hours,
+                "note": "sandbox created via ARM (tagged, TTL'd, resource-limited); "
+                        "expires_at enforced by the ARM reconciler sweep",
+            }
+
+        def _own_sandbox_runtime(identity, client):
+            rows = client.list_runtimes()  # name-match enforces ownership below
+            own_name = sandbox_name(identity.agent_name, _caller_work_uid(identity))
+            matches = [x for x in rows if x.get("runtime_class") == "sandbox"
+                       and x.get("name") == own_name]
+            if not matches:
+                raise NotFoundError(f"no own sandbox found ({own_name!r}); "
+                                    "run proxmox.sandbox.create first")
+            return matches[0]
+
+        async def sandbox_start(identity, ctx, reason: str = ""):
+            client = _require_sandbox()
+            if len((reason or "")) < 4:
+                raise ValidationError_("reason is required (min 4 chars)")
+            runtime = _own_sandbox_runtime(identity, client)
+            out = client.set_desired_state(runtime["runtime_id"], "DESIRED_RUNNING", reason)
+            return {"sandbox": runtime.get("name"), "desired": out}
+
+        async def sandbox_stop(identity, ctx, reason: str = ""):
+            client = _require_sandbox()
+            if len((reason or "")) < 4:
+                raise ValidationError_("reason is required (min 4 chars)")
+            runtime = _own_sandbox_runtime(identity, client)
+            out = client.set_desired_state(runtime["runtime_id"], "DESIRED_STOPPED", reason)
+            return {"sandbox": runtime.get("name"), "desired": out}
+
+        async def sandbox_extend_ttl(identity, ctx, ttl_hours: int, reason: str = ""):
+            client = _require_sandbox()
+            if len((reason or "")) < 4:
+                raise ValidationError_("reason is required (min 4 chars)")
+            runtime = _own_sandbox_runtime(identity, client)
+            out = client.extend_ttl(runtime["runtime_id"], int(ttl_hours), reason)
+            return {"sandbox": runtime.get("name"), **out}
+
+        async def sandbox_destroy_own(identity, ctx, reason: str = ""):
+            client = _require_sandbox()
+            if len((reason or "")) < 4:
+                raise ValidationError_("reason is required (min 4 chars)")
+            runtime = _own_sandbox_runtime(identity, client)
+            out = client.set_desired_state(runtime["runtime_id"], "DESIRED_DESTROYED", reason)
+            return {"sandbox": runtime.get("name"), "desired": out,
+                    "note": "DESIRED_DESTROYED flip; ARM owns the ownership-verified teardown"}
+
+        async def deployment_request(identity, ctx, target: str, reason: str,
+                                     change: str = ""):
+            """Durable approval request for a production deployment (§26)."""
+            if not (target or "").strip() or len((reason or "")) < 4:
+                raise ValidationError_("target and reason (min 4 chars) are required")
+            args_hash = hash_args({"target": target, "reason": reason, "change": change})
+            out = approvals.create(agent_name=identity.agent_name,
+                                   capability="proxmox.deployment.request",
+                                   reason=f"target={target}; {reason}", args_hash=args_hash)
+            return {"approval_request_id": out["request_id"], "status": out["status"],
+                    "note": "Server Manager validates target/backup/rollback/policy "
+                            "before any narrow deployment path is granted"}
+
+        def _proxmox_tool(name, desc, schema, fn, risk):
+            wrapped = _bind_args(fn)
+            cap = Capability(
+                name=name, domain="proxmox", risk=risk, roles={"worker"},
+                scopes={"proxmox.write"},
+                description=desc, timeout_seconds=30, side_effect="external",
+                meta={"input_schema": schema},
+            )
+            cap.handler = wrapped
+            self._register_tool(cap)
+
+        _proxmox_tool("proxmox.sandbox.create",
+                      "Create YOUR OWN sandbox VM (TTL'd, tagged, resource-limited; "
+                      "SENSITIVE_WRITE; reason required).",
+                      {"type": "object",
+                       "properties": {"ttl_hours": {"type": "integer", "minimum": 1, "maximum": 720},
+                                      "reason": {"type": "string", "minLength": 4}},
+                       "required": ["reason"]},
+                      sandbox_create, RiskClass.SENSITIVE_WRITE)
+        _proxmox_tool("proxmox.sandbox.start",
+                      "Start YOUR OWN sandbox (SENSITIVE_WRITE; reason required).",
+                      {"type": "object",
+                       "properties": {"reason": {"type": "string", "minLength": 4}},
+                       "required": ["reason"]},
+                      sandbox_start, RiskClass.SENSITIVE_WRITE)
+        _proxmox_tool("proxmox.sandbox.stop",
+                      "Stop YOUR OWN sandbox gracefully (SENSITIVE_WRITE; reason required).",
+                      {"type": "object",
+                       "properties": {"reason": {"type": "string", "minLength": 4}},
+                       "required": ["reason"]},
+                      sandbox_stop, RiskClass.SENSITIVE_WRITE)
+        _proxmox_tool("proxmox.sandbox.extend_ttl",
+                      "Extend YOUR OWN sandbox TTL (SENSITIVE_WRITE; bounded by SM max; reason required).",
+                      {"type": "object",
+                       "properties": {"ttl_hours": {"type": "integer", "minimum": 1, "maximum": 720},
+                                      "reason": {"type": "string", "minLength": 4}},
+                       "required": ["ttl_hours", "reason"]},
+                      sandbox_extend_ttl, RiskClass.SENSITIVE_WRITE)
+        _proxmox_tool("proxmox.sandbox.destroy_own",
+                      "Destroy YOUR OWN sandbox (DESIRED_DESTROYED flip; ownership-verified teardown; reason required).",
+                      {"type": "object",
+                       "properties": {"reason": {"type": "string", "minLength": 4}},
+                       "required": ["reason"]},
+                      sandbox_destroy_own, RiskClass.SENSITIVE_WRITE)
+        _proxmox_tool("proxmox.deployment.request",
+                      "Request a production deployment via Server Manager (durable approval request; "
+                      "SM validates target/backup/rollback/policy).",
+                      {"type": "object",
+                       "properties": {"target": {"type": "string", "minLength": 1},
+                                      "reason": {"type": "string", "minLength": 4},
+                                      "change": {"type": "string"}},
+                       "required": ["target", "reason"]},
+                      deployment_request, RiskClass.SENSITIVE_WRITE)
+
+        # ---- resource registration helper (mirrors llm static pattern) ----
+
+        def _register_proxmox_resource(name, uri, resolver, description, *,
+                                       roles=None):
+            cap = Capability(
+                name=name, domain="proxmox", risk=RiskClass.READ,
+                roles=roles if roles is not None else {
+                    "worker", "reviewer", "project_manager", "executive",
+                    "infrastructure_admin", "observer"},
+                scopes={"proxmox.read"},
+                description=description, kind="resource", uri_template=uri,
+            )
+
+            from mcp.server.fastmcp.resources.templates import FunctionResource
+
+            if _TEMPLATE_PARAM_SEARCH.search(uri) is None:
+                def _static_resolver(identity):
+                    return resolver(identity, {})
+
+                cap.handler = lambda ident, ctx=None, _r=_static_resolver: _async_result(_r(ident))
+
+                async def _static():
+                    identity = CURRENT_IDENTITY.get()
+                    entry = AuditEntry(
+                        agent_name=identity.agent_name if identity else "(none)",
+                        token_id=identity.token_id if identity else "",
+                        token_kind=identity.token_kind.value if identity else "agent",
+                        work_uid=getattr(identity, "work_uid", None),
+                        domain=cap.domain, name=cap.name, entry_kind="resource",
+                        risk_class=cap.risk, status="ok",
+                    )
+                    start = time.monotonic()
+                    try:
+                        if identity is None:
+                            raise UnauthenticatedError("no identity bound")
+                        cap.authorize(identity)
+                        result = _static_resolver(identity)
+                        entry.duration_ms = int((time.monotonic() - start) * 1000)
+                        self.audit.record(entry)
+                        return result
+                    except GatewayError as exc:
+                        entry.duration_ms = int((time.monotonic() - start) * 1000)
+                        entry.status = "denied" if exc.error_type in {
+                            GatewayErrorType.ROLE_REQUIRED,
+                            GatewayErrorType.SCOPE_REQUIRED,
+                            GatewayErrorType.OUT_OF_SCOPE,
+                            GatewayErrorType.DESTRUCTIVE_DENY,
+                            GatewayErrorType.APPROVAL_REQUIRED} else "error"
+                        entry.error_type = exc.error_type.value
+                        entry.detail = exc.detail
+                        self.audit.record(entry)
+                        exc.args = (f"{exc.error_type.value}: {exc.detail}",)
+                        raise
+                self.mcp._resource_manager.add_resource(
+                    FunctionResource.from_function(_static, uri=uri, name=dotted(name),
+                                                   description=description,
+                                                   mime_type="application/json"))
+            else:
+                async def tpl_fn(**kwargs):
+                    kwargs = {k: urllib.parse.unquote(v) for k, v in kwargs.items()}
+                    identity = CURRENT_IDENTITY.get()
+                    entry = AuditEntry(
+                        agent_name=identity.agent_name if identity else "(none)",
+                        token_id=identity.token_id if identity else "",
+                        token_kind=identity.token_kind.value if identity else "agent",
+                        work_uid=getattr(identity, "work_uid", None),
+                        domain=cap.domain, name=cap.name, entry_kind="resource",
+                        risk_class=cap.risk, status="ok",
+                        args_hash=hash_args(kwargs),
+                    )
+                    start = time.monotonic()
+                    try:
+                        if identity is None:
+                            raise UnauthenticatedError("no identity bound")
+                        cap.authorize(identity)
+                        result = resolver(identity, kwargs)
+                        entry.duration_ms = int((time.monotonic() - start) * 1000)
+                        self.audit.record(entry)
+                        return result
+                    except GatewayError as exc:
+                        entry.duration_ms = int((time.monotonic() - start) * 1000)
+                        entry.status = "denied" if exc.error_type in {
+                            GatewayErrorType.ROLE_REQUIRED,
+                            GatewayErrorType.SCOPE_REQUIRED,
+                            GatewayErrorType.OUT_OF_SCOPE,
+                            GatewayErrorType.DESTRUCTIVE_DENY,
+                            GatewayErrorType.APPROVAL_REQUIRED} else "error"
+                        entry.error_type = exc.error_type.value
+                        entry.detail = exc.detail
+                        self.audit.record(entry)
+                        exc.args = (f"{exc.error_type.value}: {exc.detail}",)
+                        raise
+                self.mcp._resource_manager.add_template(
+                    tpl_fn, uri_template=uri, name=dotted(name),
+                    description=description, mime_type="application/json")
+
+            if _TEMPLATE_PARAM_SEARCH.search(uri) is None:
+                # direct-call handle for tests/registry consumers
+                async def _direct_static(identity, params=None, _r=_static_resolver, _cap=cap):
+                    _cap.authorize(identity)
+                    return _r(identity)
+                cap.handler = _direct_static
+            else:
+                async def _direct_tpl(identity, params=None, _resolver=resolver, _cap=cap):
+                    _cap.authorize(identity)
+                    return _resolver(identity, _unquote_params(params))
+                cap.handler = _direct_tpl
+            self.registry.register(cap)
+
+        _register_proxmox_resource(
+            "proxmox.sandbox.status", "proxmox://sandbox/status", r_sandbox_status,
+            "The CALLING agent's own sandbox runtimes (SM agent-runtimes, sandbox class only).")
+
+        _register_proxmox_resource(
+            "proxmox.vm.status", "proxmox://fleet/runtimes",
+            lambda identity, uri_params: {
+                "runtimes": _require_sandbox().list_runtimes(),
+                "note": "fleet view — executive/infrastructure_admin only"},
+            "Fleet runtime view (role-gated broad read).",
+            roles={"executive", "infrastructure_admin"})
+
 # ---------------- argument plumbing helpers ----------------
+
+def _unquote_params(uri_params):
+    """owner/name URIs arrive percent-encoded through MCP template matching
+    ({repo} = [^/]+ in the SDK) — decode before validation."""
+    return {k: urllib.parse.unquote(v) for k, v in (uri_params or {}).items()}
+
 
 def _async_result(value):
     """Wrap a sync resolver result into an awaitable for resource handlers."""
