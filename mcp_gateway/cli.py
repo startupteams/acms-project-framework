@@ -156,11 +156,14 @@ def cmd_revoke(args) -> int:
 
 
 def cmd_grant_scopes(args) -> int:
-    """W2 migration path: union scopes into every ACTIVE token of an agent."""
+    """W2 migration path: union scopes into every ACTIVE token of an agent
+    (agent tokens AND assignment tokens — W3: mint-assignment defaults lack
+    github.*)."""
     cfg = _config_from_env()
     store = TokenStore(cfg.tokens_path)
     scopes = [s.strip() for s in args.scopes.split(",") if s.strip()]
     n = store.grant_agent_scopes(args.agent_name, scopes)
+    n += store.grant_assignment_scopes(args.agent_name, scopes)
     print(json.dumps({"agent_name": args.agent_name, "scopes": scopes, "tokens_updated": n}))
     return 0 if n else 1
 
