@@ -246,6 +246,8 @@ def gateway_env():
         acms_insecure_tls=False,
         tokens_path=str(tmp / "tokens.sqlite3"),
         audit_path=str(tmp / "audit.sqlite3"),
+        approvals_path=str(tmp / "approvals.sqlite3"),
+        internal_token="test-internal-secret",
     )
     store = TokenStore(cfg.tokens_path)
     audit = AuditLog(cfg.audit_path)

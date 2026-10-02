@@ -335,9 +335,47 @@ async def work_detail(
         "prs": (await _work_prs(db, work_item_id)),
         # STEA-004 §9: canonical Markdown handoff surfaced prominently
         "canonical_handoff": canonical_handoff,
+        # ---- W2: MCP activity for this work item (plan §24) — best-effort ----
+        "mcp_activity": _mcp_activity_rows(
+            work_uid=getattr(record, "work_uid", None),
+            agent_name=(getattr(assigned_agent, "display_name", None)
+                        if assigned_agent else None),
+        ),
+        "mcp_gateway_configured": _mcp_gateway_configured(),
         "error": request.query_params.get("error"),
     }
     return _templates().TemplateResponse(request, "work_detail.html", context)
+
+
+def _mcp_gateway_configured() -> bool:
+    from ..settings import get_settings as _gs
+
+    _s = _gs()
+    return bool(_s.mcp_gateway_base_url and _s.mcp_gateway_internal_token)
+
+
+def _mcp_activity_rows(*, work_uid: str | None, agent_name: str | None) -> list[dict]:
+    """MCP activity rows for this work item (plan §24) — best-effort fetch from
+    the gateway; empty list on gateway down/unconfigured (never fabricated)."""
+    if not _mcp_gateway_configured() or not work_uid:
+        return []
+    try:
+        from ..mcp_gateway_client import McpGatewayClient
+
+        rows = McpGatewayClient().activity(work_uid=work_uid, limit=25)
+    except Exception:  # noqa: BLE001 — activity must never break the page
+        return []
+    for r in rows:
+        ts = r.get("ts")
+        if ts:
+            try:
+                from datetime import datetime as _dt
+
+                r["ts_str"] = _dt.fromisoformat(str(ts).replace("Z", "+00:00")).strftime(
+                    "%Y-%m-%d %H:%M:%S")
+            except (ValueError, TypeError):
+                r["ts_str"] = str(ts)
+    return rows
 
 
 @router.post("/{work_item_id}/edit")

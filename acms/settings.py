@@ -108,6 +108,21 @@ class Settings(BaseSettings):
     # Live run-event pump (ADR-0014): false in unit tests (SQLite lock cascades).
     run_event_pump_enabled: bool = True
 
+    # ---- W2 MCP gateway integration (plan §12/§13/§23/§24) ------------------
+    # Base URL of the internal MCP gateway (VM114, e.g. http://10.0.20.108:8202).
+    # Empty ⇒ MCP surfaces are absent from dispatch envelopes and the UI shows
+    # "gateway not configured" honestly.
+    mcp_gateway_base_url: str = ""
+    # Shared internal secret for the gateway's /internal/* API (mirrors the
+    # gateway's MCP_GATEWAY_INTERNAL_TOKEN). Empty ⇒ mint/card/activity disabled.
+    mcp_gateway_internal_token: str = ""
+    # Dispatch-time assignment-token auto-mint (plan §13). Failure degrades
+    # gracefully (envelope carries gateway_url + null token + warning event);
+    # dispatch is NEVER blocked by minting problems.
+    mcp_dispatch_mint_enabled: bool = True
+    # Assignment-token TTL (hours) for auto-minted dispatch tokens.
+    mcp_assignment_ttl_hours: int = 8
+
 
 @lru_cache
 def get_settings() -> Settings:

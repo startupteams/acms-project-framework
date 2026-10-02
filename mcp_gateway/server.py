@@ -21,8 +21,10 @@ from mcp.server.transport_security import TransportSecuritySettings
 
 from . import __version__
 from .acms_adapter import AcmsClient
+from .approvals import ApprovalStore
 from .audit import AuditLog
 from .errors import (
+    ApprovalRequiredError,
     ConflictError,
     DomainUnavailableError,
     ExpiredAgentTokenError,
@@ -35,6 +37,8 @@ from .errors import (
     UnauthenticatedError,
     ValidationError_,
 )
+from .internal_api import InternalApi
+from .llm_adapter import ServerManagerClient
 from .manifest import build_context_manifest
 from .models import (
     AuditEntry,
@@ -79,6 +83,11 @@ class GatewayConfig:
     # Host-header allowlist (DNS-rebinding protection). Empty disables protection
     # (default SDK behavior); prod config SHOULD list the gateway host.
     allowed_hosts: str = ""
+    # ---- W2 (plan §21/§13/§23) ----
+    llm_base_url: str = ""            # Server Manager machine API, e.g. http://127.0.0.1:8300
+    llm_token: str = ""               # Server Manager scoped service identity
+    internal_token: str = ""          # shared secret for /internal/* (ACMS <-> gateway)
+    approvals_path: str = "/var/lib/miam-mcp-gateway/approvals.sqlite3"
 
 
 def _parse_list(raw: str) -> list[str]:
@@ -195,10 +204,13 @@ class GatewayServer:
     """Owns the FastMCP instance + registry + adapters; exposes the ASGI app."""
 
     def __init__(self, config: GatewayConfig, *, tokens: TokenStore, audit: AuditLog,
-                 acms_client: AcmsClient | None = None):
+                 acms_client: AcmsClient | None = None,
+                 llm_client: ServerManagerClient | None = None,
+                 approvals: ApprovalStore | None = None):
         self.config = config
         self.tokens = tokens
         self.audit = audit
+        self.approvals = approvals or ApprovalStore(config.approvals_path)
         self.registry = PolicyRegistry()
         self.acms = acms_client or AcmsClient(
             config.acms_base_url,
@@ -206,6 +218,12 @@ class GatewayServer:
             tls_ca=config.acms_tls_ca,
             insecure_tls=config.acms_insecure_tls,
         )
+        self.llm: ServerManagerClient | None = llm_client or (
+            ServerManagerClient(config.llm_base_url, config.llm_token)
+            if config.llm_base_url and config.llm_token else None
+        )
+        self.internal = InternalApi(tokens=tokens, audit=audit, approvals=self.approvals,
+                                    internal_token=config.internal_token)
         self.executive_names = set(_parse_list(config.executive_agent_names))
 
         transport_security = TransportSecuritySettings(
@@ -230,16 +248,18 @@ class GatewayServer:
         )
 
         self._build_acms_capabilities()
+        self._build_llm_runtime_capabilities()
         self.app = self._wrap_with_identity(self.mcp.streamable_http_app())
 
-    # ------------- public ASGI app (adds /health) -------------
+    # ------------- public ASGI app (adds /health + /internal) -------------
 
     def _wrap_with_identity(self, mcp_asgi):
         outer_app = self  # for health closure
 
         class _HealthShim:
-            def __init__(self, inner):
+            def __init__(self, inner, internal_api=None):
                 self.inner = inner
+                self.internal_api = internal_api
 
             async def __call__(self, scope, receive, send):
                 if scope["type"] == "http" and scope.get("path") in _PUBLIC_PATHS:
@@ -248,7 +268,7 @@ class GatewayServer:
                         "status": "ok",
                         "gateway": "miam-mcp-gateway",
                         "version": __version__,
-                        "domains": ["acms"],
+                        "domains": ["acms", "llm", "runtime"],
                     }).encode()
                     await send({
                         "type": "http.response.start",
@@ -257,9 +277,15 @@ class GatewayServer:
                     })
                     await send({"type": "http.response.body", "body": body})
                     return
+                if scope["type"] == "http" and scope.get("path", "").startswith("/internal"):
+                    # /internal/* = own shared-secret auth; runs BEFORE the MCP
+                    # identity middleware (which only handles /mcp anyway).
+                    await self.internal_api(scope, receive, send)
+                    return
                 await self.inner(scope, receive, send)
 
-        return IdentityMiddleware(_HealthShim(mcp_asgi), tokens=self.tokens,
+        return IdentityMiddleware(_HealthShim(mcp_asgi, self.internal),
+                                  tokens=self.tokens,
                                   audit=self.audit, executive_names=self.executive_names)
 
     # ------------- capability registration -------------
@@ -282,12 +308,23 @@ class GatewayServer:
                 entry_kind="tool",
                 risk_class=_cap.risk,
                 status="ok",
+                approval=None,
             )
             start = time.monotonic()
             try:
                 if identity is None:
                     raise UnauthenticatedError("no identity bound to this request")
-                _cap.authorize(identity)
+                try:
+                    _cap.authorize(identity)
+                except ApprovalRequiredError:
+                    # worker + SENSITIVE_WRITE: a one-time TTL-bounded approved
+                    # grant (exact agent+capability match) authorizes THIS call
+                    # and is consumed atomically (ADR-0021 W2 semantics).
+                    if identity.agent_name and self.approvals.check_and_consume_grant(
+                            identity.agent_name, _cap.name):
+                        entry.approval = "one-time-grant"
+                    else:
+                        raise
                 result = await _handler(identity, ctx)
                 entry.duration_ms = int((time.monotonic() - start) * 1000)
                 self.audit.record(entry)
@@ -751,6 +788,314 @@ class GatewayServer:
             )
             cap.handler = wrapped
             self._register_tool(cap)
+
+    # ------------- W2: llm.* + runtime.* (plan §21) -------------
+
+    def _build_llm_runtime_capabilities(self) -> None:
+        sm = self.llm
+        acms = self.acms
+        approvals = self.approvals
+
+        def _require_llm():
+            if sm is None:
+                raise DomainUnavailableError(
+                    "llm domain not configured (LLM_BASE_URL/LLM_TOKEN missing)")
+            return sm
+
+        def _runtime_self_acms_id(identity: CallIdentity) -> str:
+            if not identity.acms_agent_id:
+                raise NotFoundError(
+                    "agent token lacks an ACMS agent binding; runtime.self unavailable")
+            return identity.acms_agent_id
+
+        def _register_llm_resource(name, uri, resolver, description, *,
+                                   roles=None, scopes=None):
+            cap = Capability(
+                name=name, domain="llm" if name.startswith("llm.") else "runtime",
+                risk=RiskClass.READ,
+                roles=roles or {"worker", "reviewer", "project_manager", "executive",
+                                "infrastructure_admin", "observer"},
+                scopes=scopes or {"llm.read"},
+                description=description, kind="resource", uri_template=uri,
+            )
+
+            from mcp.server.fastmcp.resources.templates import FunctionResource
+
+            if _TEMPLATE_PARAM_SEARCH.search(uri) is None:
+                async def static_fn():
+                    identity = CURRENT_IDENTITY.get()
+                    entry = AuditEntry(
+                        agent_name=identity.agent_name if identity else "(none)",
+                        token_id=identity.token_id if identity else "",
+                        token_kind=identity.token_kind.value if identity else "agent",
+                        domain=cap.domain, name=cap.name, entry_kind="resource",
+                        risk_class=cap.risk, status="ok",
+                    )
+                    start = time.monotonic()
+                    try:
+                        if identity is None:
+                            raise UnauthenticatedError("no identity bound to this request")
+                        cap.authorize(identity)
+                        result = resolver(identity)
+                        entry.duration_ms = int((time.monotonic() - start) * 1000)
+                        self.audit.record(entry)
+                        return result
+                    except GatewayError as exc:
+                        entry.duration_ms = int((time.monotonic() - start) * 1000)
+                        entry.status = "denied" if exc.error_type in {
+                            GatewayErrorType.ROLE_REQUIRED, GatewayErrorType.SCOPE_REQUIRED,
+                            GatewayErrorType.OUT_OF_SCOPE, GatewayErrorType.DESTRUCTIVE_DENY,
+                            GatewayErrorType.APPROVAL_REQUIRED} else "error"
+                        entry.error_type = exc.error_type.value
+                        entry.detail = exc.detail
+                        self.audit.record(entry)
+                        exc.args = (f"{exc.error_type.value}: {exc.detail}",)
+                        raise
+
+                resource = FunctionResource.from_function(
+                    static_fn, uri=uri, name=dotted(name), description=description,
+                    mime_type="application/json")
+                self.mcp._resource_manager.add_resource(resource)
+            else:
+                # Parametrized: URI params flow into resolver(identity, uri_params)
+                async def tpl_fn(**kwargs):
+                    identity = CURRENT_IDENTITY.get()
+                    entry = AuditEntry(
+                        agent_name=identity.agent_name if identity else "(none)",
+                        token_id=identity.token_id if identity else "",
+                        token_kind=identity.token_kind.value if identity else "agent",
+                        domain=cap.domain, name=cap.name, entry_kind="resource",
+                        risk_class=cap.risk, status="ok",
+                        args_hash=hash_args(kwargs),
+                    )
+                    start = time.monotonic()
+                    try:
+                        if identity is None:
+                            raise UnauthenticatedError("no identity bound to this request")
+                        cap.authorize(identity)
+                        result = resolver(identity, kwargs)
+                        entry.duration_ms = int((time.monotonic() - start) * 1000)
+                        self.audit.record(entry)
+                        return result
+                    except GatewayError as exc:
+                        entry.duration_ms = int((time.monotonic() - start) * 1000)
+                        entry.status = "denied" if exc.error_type in {
+                            GatewayErrorType.ROLE_REQUIRED, GatewayErrorType.SCOPE_REQUIRED,
+                            GatewayErrorType.OUT_OF_SCOPE, GatewayErrorType.DESTRUCTIVE_DENY,
+                            GatewayErrorType.APPROVAL_REQUIRED} else "error"
+                        entry.error_type = exc.error_type.value
+                        entry.detail = exc.detail
+                        self.audit.record(entry)
+                        exc.args = (f"{exc.error_type.value}: {exc.detail}",)
+                        raise
+
+                self.mcp._resource_manager.add_template(
+                    tpl_fn, uri_template=uri, name=dotted(name),
+                    description=description, mime_type="application/json")
+            self.registry.register(cap)
+
+        # ---- resources (READ; all need the SM client; scopes: llm.read) ----
+
+        def r_models_list(identity):
+            routes = _require_llm().model_routes()
+            from .llm_adapter import _prune_route
+            return {"models": [_prune_route(n, b) for n, b in sorted(routes.items())]}
+
+        def r_model_get(identity, uri_params):
+            from .llm_adapter import _prune_route
+            model = uri_params.get("model", "")
+            routes = _require_llm().model_routes()
+            if model not in routes:
+                raise NotFoundError(f"unknown model route: {model}")
+            return _prune_route(model, routes[model])
+
+        def r_model_health(identity):
+            routes = _require_llm().model_routes()
+            return {"models": {
+                n: [{"health": b.get("health"), "routable": b.get("routable")}
+                    for b in bs] for n, bs in sorted(routes.items())}}
+
+        def r_loaded_models(identity):
+            active = _require_llm().active_hosts()
+            return {"loaded": active}
+
+        def r_host_capacity(identity):
+            hosts = _require_llm().hosts()
+            from .llm_adapter import _prune_host
+            return {"hosts": [_prune_host(h) for h in hosts]}
+
+        def r_route_status(identity, uri_params):
+            from .llm_adapter import _prune_route
+            ref = uri_params.get("model", "")
+            routes = _require_llm().model_routes()
+            target = ref if ref in routes else None
+            if target is None:
+                # alias resolution: find a route whose alias_target matches
+                aliases = {n: [b.get("alias_target") for b in bs
+                               if b.get("is_alias")] for n, bs in routes.items()}
+                target = next((n for n, tg in aliases.items() if ref in tg), None)
+            if target is None:
+                raise NotFoundError(f"unknown model/alias: {ref}")
+            return _prune_route(target, routes[target])
+
+        def r_usage(identity):
+            body = _require_llm().usage(24)
+            models = body.get("models", [])[:25]
+            return {"window_hours": body.get("window_hours", 24), "models": models}
+
+        def r_runtime_self(uri_params, identity):
+            agent_id = _runtime_self_acms_id(identity)
+            status, body = acms.request(
+                "GET", f"/api/v1/fleet/agents/{agent_id}/runtime")
+            if status != 200:
+                raise DomainUnavailableError(f"ACMS fleet runtime failed (HTTP {status})")
+            return {"runtime": body}
+
+        def r_runtime_fleet(uri_params, identity):
+            if not identity.has_role("executive", "infrastructure_admin"):
+                raise OutOfScopeError("runtime.fleet requires executive/infrastructure_admin")
+            runtimes = _require_llm().agent_runtimes()
+            from .llm_adapter import _prune_runtime
+            return {"runtimes": [_prune_runtime(rt) for rt in runtimes], "count": len(runtimes)}
+
+        _register_llm_resource("llm.models.list", "llm://models", r_models_list,
+                               "Routable model catalog with per-backend health/context (SM authority).")
+        _register_llm_resource("llm.model.get", "llm://models/{model}", r_model_get,
+                               "One model route's backends (health, context_limit, alias info).")
+        _register_llm_resource("llm.model_health", "llm://model-health", r_model_health,
+                               "Health/routability summary for every known model.")
+        _register_llm_resource("llm.loaded_models", "llm://loaded-models", r_loaded_models,
+                               "Currently active model-serving hosts (active_hosts).")
+        _register_llm_resource("llm.host_capacity", "llm://host-capacity", r_host_capacity,
+                               "Physical host inventory: GPUs, node, desired power/service state.")
+        _register_llm_resource("llm.route_status", "llm://route-status/{model}", r_route_status,
+                               "Resolve a model name or alias to its concrete route.")
+        _register_llm_resource("llm.usage", "llm://usage", r_usage,
+                               "Token usage aggregate (last 24h, LiteLLM SpendLogs via SM).")
+        _register_llm_resource("runtime.self", "runtime://self", r_runtime_self,
+                               "The calling agent's own runtime/VM/bridge state (ACMS fleet view).")
+        _register_llm_resource("runtime.fleet", "runtime://fleet", r_runtime_fleet,
+                               "Broad runtime fleet view (executive/infrastructure_admin only).")
+
+        # ---- tools ----
+
+        def _own_work_item_id(identity: CallIdentity) -> tuple[str, str]:
+            """(work_item_id, work_uid) of the caller's own assignment."""
+            if identity.is_assignment_scoped and identity.work_uid:
+                work = acms.find_work_item(identity.work_uid)
+                if work is None:
+                    raise NotFoundError(f"work item not found: {identity.work_uid}")
+                return work.get("work_item_id", ""), work.get("work_uid", "")
+            if not identity.acms_agent_id:
+                raise OutOfScopeError("agent token lacks ACMS agent binding")
+            assignment = acms.active_assignment(identity.acms_agent_id)
+            if assignment is None:
+                raise OutOfScopeError("no ACTIVE assignment; model policy requires one")
+            work = acms.find_work_item(assignment.get("work_item_id", ""))
+            if work is None:
+                raise NotFoundError("linked work item missing")
+            return work.get("work_item_id", ""), work.get("work_uid", "")
+
+        async def request_model(identity, ctx, model: str, reason: str = ""):
+            model = (model or "").strip()
+            if not model:
+                raise ValidationError_("model is required")
+            # validate against the SM catalog BEFORE any ACMS write (fail fast)
+            routes = _require_llm().model_routes()
+            if model not in routes:
+                known = ", ".join(sorted(routes)[:20])
+                raise ValidationError_(f"unknown model {model!r}; known: {known}")
+            work_item_id, work_uid = _own_work_item_id(identity)
+            status, body = acms.request(
+                "PUT", "/model-policy",
+                payload={"scope": "work_item", "scope_id": work_item_id,
+                         "inference_policy": "local-preferred", "preferred_model": model,
+                         "cloud_fallback": False, "updated_by": identity.agent_name},
+            )
+            if status != 200:
+                raise DomainUnavailableError(f"ACMS model-policy update failed (HTTP {status})")
+            return {"work_uid": work_uid, "preferred_model": model, "scope": "work_item",
+                    "note": "policy takes effect at next dispatch/run (ADR-0015)"}
+
+        async def request_fallback(identity, ctx, reason: str = ""):
+            work_item_id, work_uid = _own_work_item_id(identity)
+            if not reason:
+                raise ValidationError_("reason is required for cloud fallback requests")
+            status, body = acms.request(
+                "PUT", "/model-policy",
+                payload={"scope": "work_item", "scope_id": work_item_id,
+                         "inference_policy": "any", "preferred_model": None,
+                         "cloud_fallback": True, "updated_by": identity.agent_name},
+            )
+            if status != 200:
+                raise DomainUnavailableError(f"ACMS model-policy update failed (HTTP {status})")
+            return {"work_uid": work_uid, "inference_policy": "any",
+                    "cloud_fallback": True,
+                    "note": "bounded by ACMS cloud_fallback_max_usd (ADR-0015)"}
+
+        async def restart_self(identity, ctx, reason: str = ""):
+            if not reason:
+                raise ValidationError_("reason is required for a self restart")
+            agent_id = _runtime_self_acms_id(identity)
+            status, body = acms.request(
+                "POST", f"/api/v1/fleet/agents/{agent_id}/runtime/restart")
+            if status not in (200, 202, 303):
+                raise DomainUnavailableError(f"ACMS runtime restart failed (HTTP {status})")
+            return {"restarted": "self", "agent_id": agent_id,
+                    "note": "runtime restart via ACMS fleet API (Server Manager authority)"}
+
+        async def request_elevated(identity, ctx, capability: str, reason: str):
+            """Record a durable SENSITIVE_WRITE approval request (plan §16/§36)."""
+            if not capability:
+                raise ValidationError_("capability is required")
+            args_hash = hash_args({"capability": capability, "reason": reason})
+            out = approvals.create(agent_name=identity.agent_name,
+                                   capability=capability, reason=reason,
+                                   args_hash=args_hash)
+            return {"approval_request_id": out["request_id"], "status": out["status"],
+                    "note": "executive decision required (CLI 'approval decide' or "
+                            "ACMS internal API); the grant is ONE-TIME and TTL-bounded"}
+
+        def _llm_tool(name, desc, schema, fn, risk, *, roles=None):
+            wrapped = _bind_args(fn)
+            cap = Capability(
+                name=name, domain="llm" if name.startswith("llm.") else "runtime",
+                risk=risk, roles=roles if roles is not None else {"worker"},
+                scopes={"llm.write"} if name.startswith("llm.") else {"runtime.write"},
+                description=desc, timeout_seconds=15, side_effect="external",
+                meta={"input_schema": schema},
+            )
+            cap.handler = wrapped
+            self._register_tool(cap)
+
+        _llm_tool("llm.request_model",
+                  "Request a preferred model for YOUR current work item (validated against the live catalog).",
+                  {"type": "object",
+                   "properties": {"model": {"type": "string", "minLength": 1},
+                                  "reason": {"type": "string"}},
+                   "required": ["model"]},
+                  request_model, RiskClass.SAFE_WRITE)
+        _llm_tool("llm.request_fallback",
+                  "Request cloud fallback for YOUR current work item (reason required; bounded by ACMS budget caps).",
+                  {"type": "object",
+                   "properties": {"reason": {"type": "string", "minLength": 1}},
+                   "required": ["reason"]},
+                  request_fallback, RiskClass.SAFE_WRITE)
+        # runtime.restart_self: SENSITIVE_WRITE — executives pass directly;
+        # workers get a durable approval-request path (one-time, TTL-bounded grant).
+        _llm_tool("runtime.restart_self",
+                  "Restart YOUR OWN runtime (SENSITIVE_WRITE; reason required; workers need executive approval).",
+                  {"type": "object",
+                   "properties": {"reason": {"type": "string", "minLength": 1}},
+                   "required": ["reason"]},
+                  restart_self, RiskClass.SENSITIVE_WRITE, roles={"worker"})
+        _llm_tool("runtime.request_elevated",
+                  "Request executive approval for a sensitive capability (durable request; one-time TTL-bounded grant).",
+                  {"type": "object",
+                   "properties": {"capability": {"type": "string", "minLength": 1},
+                                  "reason": {"type": "string", "minLength": 1}},
+                   "required": ["capability", "reason"]},
+                  request_elevated, RiskClass.SAFE_WRITE)
 
 
 # ---------------- argument plumbing helpers ----------------

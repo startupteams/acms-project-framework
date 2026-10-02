@@ -51,6 +51,12 @@ services:
       ACMS_CALLBACK_TOKEN: ${ACMS_CALLBACK_TOKEN:-}
       ACMS_CALLBACK_BASE_URL: ${ACMS_CALLBACK_BASE_URL:-}
       ACMS_CALLBACK_RECONCILE_SECONDS: ${ACMS_CALLBACK_RECONCILE_SECONDS:-300}
+      # W2 MCP gateway integration (plan §12/§13/§23/§24): internal API base + shared
+      # secret + dispatch auto-mint controls. Empty ⇒ MCP surfaces disabled honestly.
+      ACMS_MCP_GATEWAY_BASE_URL: ${ACMS_MCP_GATEWAY_BASE_URL:-}
+      ACMS_MCP_GATEWAY_INTERNAL_TOKEN: ${ACMS_MCP_GATEWAY_INTERNAL_TOKEN:-}
+      ACMS_MCP_DISPATCH_MINT_ENABLED: ${ACMS_MCP_DISPATCH_MINT_ENABLED:-true}
+      ACMS_MCP_ASSIGNMENT_TTL_HOURS: ${ACMS_MCP_ASSIGNMENT_TTL_HOURS:-8}
       # Jira v1 (2026-09-29 plan Phase D/G): env-only credentials; empty ⇒ mock mode.
       ACMS_JIRA_BASE_URL: ${ACMS_JIRA_BASE_URL:-}
       ACMS_JIRA_EMAIL: ${ACMS_JIRA_EMAIL:-}

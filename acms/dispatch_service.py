@@ -313,6 +313,62 @@ async def dispatch_work(db: AsyncSession, *, work_item_id: str,
         idempotency_key=dedupe_key,
     )
 
+    # ---- 4c. MCP assignment-token auto-mint (plan §12/§13; W2) --------------
+    # Best-effort, NEVER dispatch-blocking. On success the envelope gains an
+    # mcp_assignment block {gateway_url, assignment_token, expires_at, ...};
+    # the raw token rides the envelope/instruction to the worker exactly once
+    # (never logged, never persisted in ACMS). On failure the envelope still
+    # advertises the gateway (when configured) with token=None + a warning
+    # event, so workers know MCP exists but this run rides without a token.
+    from .settings import get_settings as _gs
+
+    _s = _gs()
+    mcp_block: dict[str, Any] | None = None
+    if _s.mcp_gateway_base_url:
+        mcp_block = {"gateway_url": _s.mcp_gateway_base_url.rstrip("/"),
+                     "assignment_token": None, "token_id": None, "expires_at": None}
+        if _s.mcp_dispatch_mint_enabled and _s.mcp_gateway_internal_token:
+            from .mcp_gateway_client import McpGatewayClient
+
+            _agent_name = None
+            if target_agent:
+                from .registry import list_agents as _list_agents
+
+                try:
+                    _agents = {a.agent_id: a for a in await _list_agents(db)}
+                    _agent = _agents.get(str(target_agent))
+                    _agent_name = (_agent.display_name if _agent else None)
+                except Exception:  # noqa: BLE001 — name lookup is best-effort
+                    _agent_name = None
+            if _agent_name:
+                _minted = McpGatewayClient().mint_assignment(
+                    agent_name=_agent_name,
+                    work_uid=work.work_uid or work.work_key or work_item_id,
+                    ttl_hours=max(1, int(_s.mcp_assignment_ttl_hours)),
+                    jira_issue_key=work.jira_issue_key,
+                    project_slug=project_ctx.get("id") if project_ctx else None,
+                )
+                if _minted is not None:
+                    mcp_block.update({
+                        "assignment_token": _minted.get("token"),
+                        "token_id": _minted.get("token_id"),
+                        "expires_at": _minted.get("expires_at"),
+                    })
+                else:
+                    await add_event(
+                        db,
+                        event_type="MCP_ASSIGNMENT_MINT_FAILED",
+                        actor_source="dispatch",
+                        agent_id=str(target_agent),
+                        work_key=work.work_key,
+                        summary=f"MCP assignment-token mint failed for "
+                                f"{work.work_key or work_item_id[:8]} (dispatch proceeds)",
+                        metadata={"work_item_id": work_item_id,
+                                  "dedupe_key": dedupe_key},
+                    )
+    if mcp_block is not None:
+        envelope["mcp_assignment"] = mcp_block
+
     dispatch_instruction = (
         f"{instruction}\n\n---\nACMS ASSIGNMENT ENVELOPE (machine-readable; "
         f'schema {ASSIGNMENT_SCHEMA_VERSION}):\n'

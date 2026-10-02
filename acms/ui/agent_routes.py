@@ -263,8 +263,38 @@ async def agent_detail(
         "runtime": runtime_view,
         "runtime_error": runtime_error,
         "runtime_controls_enabled": runtime_controls_enabled,
+        # ---- W2: MCP capability card (plan §23) — best-effort, honest ----
+        "mcp_card": _mcp_capability_card(agent),
+        "mcp_gateway_configured": _mcp_gateway_configured(),
     }
     return _templates().TemplateResponse(request, "agent_detail.html", context)
+
+
+def _mcp_gateway_configured() -> bool:
+    from ..settings import get_settings as _gs
+
+    _s = _gs()
+    return bool(_s.mcp_gateway_base_url and _s.mcp_gateway_internal_token)
+
+
+def _mcp_capability_card(agent) -> dict | None:
+    """Fetch the agent's MCP capability card from the gateway (plan §23).
+
+    Best-effort: gateway down / unconfigured / unknown agent ⇒ None and the
+    UI renders the honest 'gateway unavailable' state. Token values are never
+    part of the card (gateway exports metadata only)."""
+    if not _mcp_gateway_configured():
+        return None
+    try:
+        from ..mcp_gateway_client import McpGatewayClient
+
+        card = McpGatewayClient().capability_card(agent.display_name)
+    except Exception:  # noqa: BLE001 — card must never break the page
+        return None
+    if card and isinstance(card.get("last_mcp_activity"), dict):
+        la = card["last_mcp_activity"]
+        card["last_mcp_activity"]["ts_str"] = _fmt_str(la.get("ts"))
+    return card
 
 
 def _fmt_str(iso: str | None) -> str:
