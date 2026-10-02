@@ -276,3 +276,13 @@ def test_pdu_outlet_status_unknown_pdu_is_clean_404(tmp_path):
     assert raised is not None
     # must NOT be a NameError — the import fix guarantees the mapped error type
     assert type(raised).__name__ != "NameError"
+
+
+def test_power_client_timeout_accommodates_pdu_ssh_poll(tmp_path):
+    """W5 live-found: the per-asset power-state read fans out to the PDU
+    Manager SSH poll (~20s cold); the client default of 10s timed out. The
+    gateway must construct PowerClient with a raised timeout."""
+    import inspect
+    from mcp_gateway import server as server_mod
+    src_txt = inspect.getsource(server_mod.GatewayServer.__init__)
+    assert "timeout_seconds=45" in src_txt

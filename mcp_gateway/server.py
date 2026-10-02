@@ -254,7 +254,10 @@ class GatewayServer:
         # W5 (plan §27): pdu.*/power.* ride the SAME SM machine API; dedicated
         # PowerClient so the domain is gated apart (same transport, new surface).
         self.power: ServerManagerClient | None = power_client or (
-            PowerClient(config.llm_base_url, config.llm_token)
+            # W5 live-found: the per-asset power-state read fans out to the PDU
+            # Manager's SSH state poll (~20s cold). The client default (10s)
+            # times out before SM answers; raise the power client to 45s.
+            PowerClient(config.llm_base_url, config.llm_token, timeout_seconds=45)
             if (config.llm_base_url and config.llm_token) else None
         )
         self.internal = InternalApi(tokens=tokens, audit=audit, approvals=self.approvals,
