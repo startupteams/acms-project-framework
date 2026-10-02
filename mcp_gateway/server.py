@@ -1936,40 +1936,67 @@ class GatewayServer:
                 raise ValidationError_("pdu key and numeric outlet are required")
             return _require_power().pdu_outlet_status(key, int(outlet))
 
+        def _totals(body):
+            """W5 live-found: SM nests the aggregate under ``totals`` (a dict with
+            label/definition/kwh_24h/cost_usd_24h/kwh_30d/cost_usd_30d/
+            incomplete_reason). Reading body["total"]/body["incomplete_reason"]
+            always produced null even with all channels fresh — TOTAL
+            MARION_IA_USA was silently blank. Withhold logic: when ANY channel
+            is stale the total is null WITH the explicit incomplete_reason
+            (never zeroed, never fabricated)."""
+            totals = body.get("totals") or {}
+            channels = body.get("channels") or []
+            any_stale = bool(channels) and any(c.get("stale") for c in channels)
+            if any_stale:
+                return {"total": None,
+                        "incomplete_reason": (totals.get("incomplete_reason")
+                                              or "one or more channels stale; "
+                                              "TOTAL withheld (never zeroed)")}
+            if not channels:
+                return {"total": None,
+                        "incomplete_reason": "no channel data returned by Server Manager"}
+            return {"total": totals or None,
+                    "incomplete_reason": totals.get("incomplete_reason")}
+
         def r_power_current(identity, uri_params):
             body = _require_power().facility_power()
             channels = body.get("channels", [])
             pdu = [c for c in channels if "PDU" in (c.get("label") or "")]
             cooling = [c for c in channels if "split" in (c.get("label") or "").lower()
                        or "cooling" in (c.get("label") or "").lower()]
-            return {"generated_at": body.get("generated_at"),
-                    "pdu_channels": pdu, "cooling_channels": cooling,
-                    "total": body.get("total"),
-                    "incomplete_reason": body.get("incomplete_reason"),
-                    "note": "stale channels are reported as stale (never zeroed)"}
+            out = {"generated_at": body.get("generated_at"),
+                   "pdu_channels": pdu, "cooling_channels": cooling}
+            out.update(_totals(body))
+            out["note"] = "stale channels are reported as stale (never zeroed)"
+            return out
 
         def r_power_history(identity, uri_params):
             body = _require_power().facility_power()
-            return {"channels": [{"label": c.get("label"),
-                                  "kwh_24h": c.get("kwh_24h"),
-                                  "cost_usd_24h": c.get("cost_usd_24h"),
-                                  "kwh_30d": c.get("kwh_30d"),
-                                  "cost_usd_30d": c.get("cost_usd_30d")}
-                                 for c in body.get("channels", [])],
-                    "total": body.get("total"),
-                    "rate": body.get("rate") or body.get("rate_source")}
+            out = {"channels": [{"label": c.get("label"),
+                                 "kwh_24h": c.get("kwh_24h"),
+                                 "cost_usd_24h": c.get("cost_usd_24h"),
+                                 "kwh_30d": c.get("kwh_30d"),
+                                 "cost_usd_30d": c.get("cost_usd_30d")}
+                                for c in body.get("channels", [])]}
+            out.update(_totals(body))
+            out["rate"] = body.get("rate") or body.get("rate_source")
+            return out
 
         def r_power_cost(identity, uri_params):
             body = _require_power().facility_power()
-            return {"cost_usd_24h": sum((c.get("cost_usd_24h") or 0)
-                                        for c in body.get("channels", [])),
-                    "cost_usd_30d": sum((c.get("cost_usd_30d") or 0)
-                                        for c in body.get("channels", [])),
-                    "channels": [{"label": c.get("label"),
-                                  "cost_usd_24h": c.get("cost_usd_24h"),
-                                  "cost_usd_30d": c.get("cost_usd_30d")}
-                                 for c in body.get("channels", [])],
-                    "note": "components per electricity_rates; total withheld when incomplete"}
+            out = {"cost_usd_24h": sum((c.get("cost_usd_24h") or 0)
+                                       for c in body.get("channels", [])),
+                   "cost_usd_30d": sum((c.get("cost_usd_30d") or 0)
+                                       for c in body.get("channels", [])),
+                   "channels": [{"label": c.get("label"),
+                                 "cost_usd_24h": c.get("cost_usd_24h"),
+                                 "cost_usd_30d": c.get("cost_usd_30d")}
+                                for c in body.get("channels", [])]}
+            totals = body.get("totals") or {}
+            out["total_marion_ia_usa"] = None if any(c.get("stale") for c in body.get("channels") or []) else (
+                (totals.get("cost_usd_24h"), totals.get("cost_usd_30d")) or None)
+            out["note"] = "components per electricity_rates; TOTAL withheld (null) when any channel stale — never zeroed"
+            return out
 
         def r_power_pdu(identity, uri_params):
             body = _require_power().facility_power()
