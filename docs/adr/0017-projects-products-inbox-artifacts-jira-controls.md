@@ -40,10 +40,12 @@ gains an ACTION MAP applied AFTER linking, BEFORE dispatch eligibility:
 
 - Mapping verdicts persist on `work_items.jira_eligibility` (+reason) exactly
   like the existing gate vocab, so the UI/board render one source.
-- ACMS never writes Jira status except the §25 output link/comment under the
-  explicit `jira_status_mutation_enabled=false` rule (write-back limited to
-  comments + description edit via dedicated helpers; status transitions stay
-  human).
+- ACMS writes Jira comments/Artifact links after verified completion. Status
+  transitions remain fail-closed behind `jira_status_mutation_enabled=false`;
+  when explicitly enabled, ACMS may transition an ACMS-linked issue to
+  `IN PROGRESS` after bridge ACK and to `IN REVIEW` only after successful
+  terminal execution plus canonical Artifact creation (ACMS-REQ-063). Other
+  transitions remain human-controlled.
 
 ### Products/Projects UI (plan §11)
 

@@ -35,7 +35,7 @@ from .settings import get_settings
 
 # Fields needed for kickoff-gate observations (§13.4): status + statusCategory
 # + assignee accountId (immutable identity) + updated (changelog identity).
-_ISSUE_FIELDS = "summary,description,status,priority,labels,assignee,updated"
+_ISSUE_FIELDS = "summary,description,status,priority,labels,assignee,updated,project,issuetype"
 
 
 def ai_account_id_for_jql() -> str:
@@ -50,6 +50,27 @@ def ai_account_id_for_jql() -> str:
     if any(ch in aid for ch in ("'", "\\", "\n", ";")):
         raise JiraError("ACMS_JIRA_AI_ACCOUNT_ID contains characters unsafe for JQL")
     return aid
+
+
+def _adf_text(value: Any) -> str:
+    """Render Jira Atlassian Document Format as safe, stable plain text."""
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        return "".join(_adf_text(item) for item in value)
+    if not isinstance(value, dict):
+        return str(value)
+    node_type = value.get("type")
+    if node_type == "text":
+        return str(value.get("text") or "")
+    if node_type == "hardBreak":
+        return "\n"
+    rendered = "".join(_adf_text(item) for item in value.get("content") or [])
+    if node_type in {"paragraph", "heading", "listItem"} and rendered and not rendered.endswith("\n"):
+        rendered += "\n"
+    return rendered
 
 
 @dataclass
@@ -68,6 +89,8 @@ class JiraIssue:
     assignee_account_id: str | None = None
     status_category: str | None = None
     updated: str | None = None
+    project_key: str | None = None
+    issue_type: str | None = None
 
     @classmethod
     def from_api(cls, d: dict[str, Any], base_url: str) -> "JiraIssue":
@@ -77,7 +100,7 @@ class JiraIssue:
         return cls(
             key=d.get("key", ""),
             summary=f.get("summary", ""),
-            description=f.get("description") or "",
+            description=_adf_text(f.get("description")).strip(),
             status=status_obj.get("name", ""),
             priority=(f.get("priority") or {}).get("name", ""),
             labels=list(f.get("labels") or []),
@@ -87,6 +110,8 @@ class JiraIssue:
             assignee_account_id=assignee.get("accountId"),
             status_category=((status_obj.get("statusCategory") or {}).get("name")),
             updated=f.get("updated"),
+            project_key=(f.get("project") or {}).get("key"),
+            issue_type=(f.get("issuetype") or {}).get("name"),
         )
 
 
@@ -113,13 +138,18 @@ class JiraClient:
     def add_mock_issue(self, key: str, summary: str, description: str = "", **kw: Any) -> None:
         self._mock_issues[key] = {
             "key": key,
+            "id": kw.get("issue_id", key),
             "fields": {
                 "summary": summary,
                 "description": description,
                 "status": {"name": kw.get("status", "To Do")},
                 "priority": {"name": kw.get("priority", "Medium")},
                 "labels": kw.get("labels", []),
-                "assignee": {"emailAddress": kw.get("assignee")} if kw.get("assignee") else None,
+                "assignee": ({"emailAddress": kw.get("assignee"),
+                              "accountId": kw.get("assignee_account_id")}
+                             if kw.get("assignee") or kw.get("assignee_account_id") else None),
+                "project": {"key": kw.get("project_key", key.split("-")[0])},
+                "issuetype": {"name": kw.get("issue_type", "Task")},
             },
         }
 

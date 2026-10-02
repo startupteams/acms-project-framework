@@ -278,7 +278,7 @@ def _fallback_body(
     parts.append("")
     parts.append("## Jira")
     if work.jira_issue_key:
-        parts.append(f"- [{work.jira_issue_key}]({work.jira_url or '#'}")
+        parts.append(f"- [{work.jira_issue_key}]({work.jira_url or '#'})")
     else:
         parts.append("- (not linked)")
     parts.append("")

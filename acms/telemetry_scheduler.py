@@ -388,9 +388,20 @@ class TelemetryScheduler:
             try:
                 from .canonical_handoff import generate_canonical_handoff
 
-                await generate_canonical_handoff(
+                handoff = await generate_canonical_handoff(
                     db, task=task, status=mapped, completed_at=now_dt,
                 )
+            except Exception:  # noqa: BLE001 — never break reconciliation
+                handoff = None
+            # Jira lifecycle write-back (ACMS-REQ-063) rides the SAME
+            # authorities as the callback path — exactly-once per Work Item
+            # (durable JIRA_HANDOFF_POSTED event), failures audited inside.
+            try:
+                from .completion_callback import _finalize_jira_workflow
+
+                await _finalize_jira_workflow(
+                    db, task=task, terminal_status=mapped,
+                    handoff=handoff, error_summary=None)
             except Exception:  # noqa: BLE001 — never break reconciliation
                 pass
         if repaired:
