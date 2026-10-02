@@ -43,6 +43,7 @@ from .internal_api import InternalApi
 from .github_adapter import GithubClient, branch_owner, owned_branch
 from .llm_adapter import ServerManagerClient
 from .proxmox_adapter import SandboxClient, sandbox_name
+from .power_adapter import PowerClient
 from .manifest import build_context_manifest
 from .models import (
     AuditEntry,
@@ -220,6 +221,7 @@ class GatewayServer:
                  llm_client: ServerManagerClient | None = None,
                  github_client: GithubClient | None = None,
                  sandbox_client: "SandboxClient | None" = None,
+                 power_client: ServerManagerClient | None = None,
                  approvals: ApprovalStore | None = None):
         self.config = config
         self.tokens = tokens
@@ -248,6 +250,12 @@ class GatewayServer:
             SandboxClient(config.llm_base_url, config.llm_token)
             if (config.proxmox_enabled and config.llm_base_url and config.llm_token)
             else None
+        )
+        # W5 (plan §27): pdu.*/power.* ride the SAME SM machine API; dedicated
+        # PowerClient so the domain is gated apart (same transport, new surface).
+        self.power: ServerManagerClient | None = power_client or (
+            PowerClient(config.llm_base_url, config.llm_token)
+            if (config.llm_base_url and config.llm_token) else None
         )
         self.internal = InternalApi(tokens=tokens, audit=audit, approvals=self.approvals,
                                     internal_token=config.internal_token)
@@ -278,6 +286,7 @@ class GatewayServer:
         self._build_llm_runtime_capabilities()
         self._build_github_capabilities()
         self._build_proxmox_capabilities()
+        self._build_power_capabilities()
         self.app = self._wrap_with_identity(self.mcp.streamable_http_app())
 
     # ------------- public ASGI app (adds /health + /internal) -------------
@@ -299,7 +308,8 @@ class GatewayServer:
                         "version": __version__,
                         "domains": ["acms", "llm", "runtime"]
                                    + (["github"] if outer_app.github else [])
-                                   + (["proxmox"] if outer_app.sandbox else []),
+                                   + (["proxmox"] if outer_app.sandbox else [])
+                                   + (["power"] if outer_app.power else []),
                     }).encode()
                     await send({
                         "type": "http.response.start",
@@ -1887,6 +1897,276 @@ class GatewayServer:
                 "note": "fleet view — executive/infrastructure_admin only"},
             "Fleet runtime view (role-gated broad read).",
             roles={"executive", "infrastructure_admin"})
+
+    # ------------- PDU + Emporia power capability construction (plan §27) ----
+    def _build_power_capabilities(self) -> None:
+        """pdu.* reads + power.* reads via Server Manager (plan §27).
+
+        NO power mutation exists for ANY role here: outlet power_off is
+        DESTRUCTIVE (deny-for-all) and pdu.request_reboot rides the durable
+        approval path (SENSITIVE_WRITE) with SM-side actuation still env-gated.
+        """
+        if self.power is None:
+            return  # power domain absent when SM unconfigured/disabled
+
+        def _require_power():
+            client = self.power
+            if client is None:
+                raise DomainUnavailableError(
+                    "power domain not configured (SM base/token missing or disabled)")
+            return client
+
+        # ---- resources (READ) ----
+
+        def r_pdu_list(identity, uri_params):
+            return _require_power().pdu_list()
+
+        def r_pdu_status(identity, uri_params):
+            caps = _require_power().pdu_capabilities()
+            return {"capabilities": caps,
+                    "note": "backend is the PDU Manager contract (real backend)"}
+
+        def r_pdu_assets(identity, uri_params):
+            return _require_power().pdu_assets()
+
+        def r_pdu_outlet_status(identity, uri_params):
+            key = (uri_params or {}).get("pdu") or ""
+            outlet = (uri_params or {}).get("outlet") or ""
+            if not key or not str(outlet).isdigit():
+                raise ValidationError_("pdu key and numeric outlet are required")
+            return _require_power().pdu_outlet_status(key, int(outlet))
+
+        def r_power_current(identity, uri_params):
+            body = _require_power().facility_power()
+            channels = body.get("channels", [])
+            pdu = [c for c in channels if "PDU" in (c.get("label") or "")]
+            cooling = [c for c in channels if "split" in (c.get("label") or "").lower()
+                       or "cooling" in (c.get("label") or "").lower()]
+            return {"generated_at": body.get("generated_at"),
+                    "pdu_channels": pdu, "cooling_channels": cooling,
+                    "total": body.get("total"),
+                    "incomplete_reason": body.get("incomplete_reason"),
+                    "note": "stale channels are reported as stale (never zeroed)"}
+
+        def r_power_history(identity, uri_params):
+            body = _require_power().facility_power()
+            return {"channels": [{"label": c.get("label"),
+                                  "kwh_24h": c.get("kwh_24h"),
+                                  "cost_usd_24h": c.get("cost_usd_24h"),
+                                  "kwh_30d": c.get("kwh_30d"),
+                                  "cost_usd_30d": c.get("cost_usd_30d")}
+                                 for c in body.get("channels", [])],
+                    "total": body.get("total"),
+                    "rate": body.get("rate") or body.get("rate_source")}
+
+        def r_power_cost(identity, uri_params):
+            body = _require_power().facility_power()
+            return {"cost_usd_24h": sum((c.get("cost_usd_24h") or 0)
+                                        for c in body.get("channels", [])),
+                    "cost_usd_30d": sum((c.get("cost_usd_30d") or 0)
+                                        for c in body.get("channels", [])),
+                    "channels": [{"label": c.get("label"),
+                                  "cost_usd_24h": c.get("cost_usd_24h"),
+                                  "cost_usd_30d": c.get("cost_usd_30d")}
+                                 for c in body.get("channels", [])],
+                    "note": "components per electricity_rates; total withheld when incomplete"}
+
+        def r_power_pdu(identity, uri_params):
+            body = _require_power().facility_power()
+            return {"channels": [c for c in body.get("channels", [])
+                                 if "PDU" in (c.get("label") or "")]}
+
+        def r_power_cooling(identity, uri_params):
+            body = _require_power().facility_power()
+            return {"channels": [c for c in body.get("channels", [])
+                                 if "split" in (c.get("label") or "").lower()
+                                 or "cooling" in (c.get("label") or "").lower()],
+                    "note": "36k 3-ton mini split (plan §27 mapping)"}
+
+        def _register_power_resource(name, uri, resolver, description, *, roles=None):
+            cap = Capability(
+                name=name, domain="power", risk=RiskClass.READ,
+                roles=roles if roles is not None else {
+                    "worker", "reviewer", "project_manager", "executive",
+                    "infrastructure_admin", "observer"},
+                scopes={"power.read"},
+                description=description, kind="resource", uri_template=uri,
+            )
+            from mcp.server.fastmcp.resources.templates import FunctionResource
+            if _TEMPLATE_PARAM_SEARCH.search(uri) is None:
+                def _static_resolver(identity):
+                    return resolver(identity, {})
+                cap.handler = lambda ident, ctx=None, _r=_static_resolver: _async_result(_r(ident))
+
+                async def _static():
+                    identity = CURRENT_IDENTITY.get()
+                    entry = AuditEntry(
+                        agent_name=identity.agent_name if identity else "(none)",
+                        token_id=identity.token_id if identity else "",
+                        token_kind=identity.token_kind.value if identity else "agent",
+                        work_uid=getattr(identity, "work_uid", None),
+                        domain=cap.domain, name=cap.name, entry_kind="resource",
+                        risk_class=cap.risk, status="ok",
+                    )
+                    start = time.monotonic()
+                    try:
+                        if identity is None:
+                            raise UnauthenticatedError("no identity bound")
+                        cap.authorize(identity)
+                        result = _static_resolver(identity)
+                        entry.duration_ms = int((time.monotonic() - start) * 1000)
+                        self.audit.record(entry)
+                        return result
+                    except GatewayError as exc:
+                        entry.duration_ms = int((time.monotonic() - start) * 1000)
+                        entry.status = "denied" if exc.error_type in {
+                            GatewayErrorType.ROLE_REQUIRED,
+                            GatewayErrorType.SCOPE_REQUIRED,
+                            GatewayErrorType.OUT_OF_SCOPE,
+                            GatewayErrorType.DESTRUCTIVE_DENY,
+                            GatewayErrorType.APPROVAL_REQUIRED} else "error"
+                        entry.error_type = exc.error_type.value
+                        entry.detail = exc.detail
+                        self.audit.record(entry)
+                        exc.args = (f"{exc.error_type.value}: {exc.detail}",)
+                        raise
+                self.mcp._resource_manager.add_resource(
+                    FunctionResource.from_function(_static, uri=uri, name=dotted(name),
+                                                   description=description,
+                                                   mime_type="application/json"))
+            else:
+                async def tpl_fn(**kwargs):
+                    kwargs = {k: urllib.parse.unquote(v) for k, v in kwargs.items()}
+                    identity = CURRENT_IDENTITY.get()
+                    entry = AuditEntry(
+                        agent_name=identity.agent_name if identity else "(none)",
+                        token_id=identity.token_id if identity else "",
+                        token_kind=identity.token_kind.value if identity else "agent",
+                        work_uid=getattr(identity, "work_uid", None),
+                        domain=cap.domain, name=cap.name, entry_kind="resource",
+                        risk_class=cap.risk, status="ok",
+                        args_hash=hash_args(kwargs),
+                    )
+                    start = time.monotonic()
+                    try:
+                        if identity is None:
+                            raise UnauthenticatedError("no identity bound")
+                        cap.authorize(identity)
+                        result = resolver(identity, kwargs)
+                        entry.duration_ms = int((time.monotonic() - start) * 1000)
+                        self.audit.record(entry)
+                        return result
+                    except GatewayError as exc:
+                        entry.duration_ms = int((time.monotonic() - start) * 1000)
+                        entry.status = "denied" if exc.error_type in {
+                            GatewayErrorType.ROLE_REQUIRED,
+                            GatewayErrorType.SCOPE_REQUIRED,
+                            GatewayErrorType.OUT_OF_SCOPE,
+                            GatewayErrorType.DESTRUCTIVE_DENY,
+                            GatewayErrorType.APPROVAL_REQUIRED} else "error"
+                        entry.error_type = exc.error_type.value
+                        entry.detail = exc.detail
+                        self.audit.record(entry)
+                        exc.args = (f"{exc.error_type.value}: {exc.detail}",)
+                        raise
+                self.mcp._resource_manager.add_template(
+                    tpl_fn, uri_template=uri, name=dotted(name),
+                    description=description, mime_type="application/json")
+
+            if _TEMPLATE_PARAM_SEARCH.search(uri) is None:
+                async def _direct_static(identity, params=None, _r=_static_resolver, _cap=cap):
+                    _cap.authorize(identity)
+                    return _r(identity)
+                cap.handler = _direct_static
+            else:
+                async def _direct_tpl(identity, params=None, _resolver=resolver, _cap=cap):
+                    _cap.authorize(identity)
+                    return _resolver(identity, _unquote_params(params))
+                cap.handler = _direct_tpl
+            self.registry.register(cap)
+
+        _register_power_resource(
+            "power.facility.current", "power://facility/current", r_power_current,
+            "Per-channel (PDUs + mini split) + TOTAL MARION_IA_USA current draw (SM facility/power).")
+        _register_power_resource(
+            "power.facility.history", "power://facility/history", r_power_history,
+            "24h/30d kWh + cost rollups per channel (stale channels flagged, never zeroed).")
+        _register_power_resource(
+            "power.pdu.current", "power://pdu/current", r_power_pdu,
+            "The three PDU rack-circuit channels (server#1/#2/#3).")
+        _register_power_resource(
+            "power.cooling.current", "power://cooling/current", r_power_cooling,
+            "The 36k 3-ton mini split cooling channel.")
+        _register_power_resource(
+            "power.cost.summary", "power://cost/summary", r_power_cost,
+            "Cost components per electricity_rates (24h/30d $ per channel).")
+
+        # ---- tools (READ-class only; NO power mutation for any role) ----
+
+        def _power_tool(name, desc, schema, fn, risk, *, roles=None):
+            wrapped = _bind_args(fn)
+            cap = Capability(
+                name=name, domain="power", risk=risk,
+                roles=roles if roles is not None else {
+                    "worker", "reviewer", "project_manager", "executive",
+                    "infrastructure_admin", "observer"},
+                scopes={"power.read"},
+                description=desc, timeout_seconds=30, side_effect="external",
+                meta={"input_schema": schema},
+            )
+            cap.handler = wrapped
+            self._register_tool(cap)
+
+        async def pdu_list_tool(identity, ctx):
+            return r_pdu_list(identity, {})
+
+        async def pdu_status_tool(identity, ctx):
+            return r_pdu_status(identity, {})
+
+        async def pdu_assets_tool(identity, ctx):
+            return r_pdu_assets(identity, {})
+
+        async def pdu_outlet_tool(identity, ctx, pdu: str, outlet: int):
+            return r_pdu_outlet_status(identity, {"pdu": pdu, "outlet": str(outlet)})
+
+        _power_tool("pdu.list",
+                    "List PDUs known to the PDU Manager (identity + health; READ).",
+                    {"type": "object", "properties": {}}, pdu_list_tool, RiskClass.READ)
+        _power_tool("pdu.status",
+                    "PDU Manager backend status + capabilities (READ).",
+                    {"type": "object", "properties": {}}, pdu_status_tool, RiskClass.READ)
+        _power_tool("pdu.protection_state",
+                    "Asset inventory incl. protected outlets + controllability (READ).",
+                    {"type": "object", "properties": {}}, pdu_assets_tool, RiskClass.READ)
+        _power_tool("pdu.outlet_status",
+                    "One outlet's state (READ; query pdu=<key> outlet=<n>).",
+                    {"type": "object",
+                     "properties": {"pdu": {"type": "string", "minLength": 1},
+                                    "outlet": {"type": "integer", "minimum": 1}},
+                     "required": ["pdu", "outlet"]},
+                    pdu_outlet_tool, RiskClass.READ)
+
+        # plan §27: executive pdu.request_reboot = durable approval request (NOT direct actuation)
+        async def pdu_request_reboot(identity, ctx, target: str, reason: str):
+            if not (target or "").strip() or len((reason or "")) < 4:
+                raise ValidationError_("target and reason (min 4 chars) are required")
+            args_hash = hash_args({"target": target, "reason": reason})
+            out = self.approvals.create(agent_name=identity.agent_name,
+                                        capability="pdu.request_reboot",
+                                        reason=f"target={target}; {reason}", args_hash=args_hash)
+            return {"approval_request_id": out["request_id"], "status": out["status"],
+                    "note": "executive decision required; PDU Manager applies existing "
+                            "hard protections; actuation stays env-gated server-side"}
+
+        _power_tool("pdu.request_reboot",
+                    "Request a PDU/device reboot via durable approval (executive; "
+                    "no direct actuation from the gateway).",
+                    {"type": "object",
+                     "properties": {"target": {"type": "string", "minLength": 1},
+                                    "reason": {"type": "string", "minLength": 4}},
+                     "required": ["target", "reason"]},
+                    pdu_request_reboot, RiskClass.SENSITIVE_WRITE,
+                    roles={"executive", "infrastructure_admin"})
 
 # ---------------- argument plumbing helpers ----------------
 
