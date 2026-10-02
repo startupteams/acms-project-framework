@@ -46,6 +46,24 @@
     {% endif %}
   </div>
   <div class="card">
+    <h2>MCP capability</h2>
+    {% if mcp_card %}
+    <p><strong>Connected:</strong> <span class="status {{ 'conn-healthy' if mcp_card.mcp_connected else 'conn-unreachable' }}">{{ 'yes' if mcp_card.mcp_connected else 'no' }}</span> <span class="muted">via {{ mcp_card.gateway }}</span></p>
+    <p><strong>Agent token:</strong> {{ 'active' if mcp_card.agent_token.active else 'none active' }}
+       {% if mcp_card.agent_token.roles %}<span class="muted">roles: {{ mcp_card.agent_token.roles|join(', ') }}</span>{% endif %}
+       {% if mcp_card.agent_token.expires_at %}<span class="muted">&middot; expires {{ mcp_card.agent_token.expires_at[:10] }}</span>{% endif %}
+    </p>
+    <p><strong>Assignment tokens:</strong> {{ mcp_card.assignment_token.active_count }} active
+       {% if mcp_card.assignment_token.work_uids %}<span class="muted">for {{ mcp_card.assignment_token.work_uids|join(', ') }}</span>{% endif %}</p>
+    <p class="muted">{{ mcp_card.resources_available|length }} resources &middot; {{ mcp_card.tools_available|length }} tools &middot; approval-required: {{ mcp_card.tools_requiring_approval|join(', ') or 'none' }}</p>
+    {% if mcp_card.last_mcp_activity %}<p class="muted">Last MCP activity: {{ mcp_card.last_mcp_activity.ts_str or mcp_card.last_mcp_activity.ts }} — {{ mcp_card.last_mcp_activity.name }} ({{ mcp_card.last_mcp_activity.status }})</p>{% else %}<p class="muted">No MCP activity recorded yet.</p>{% endif %}
+    {% elif mcp_gateway_configured %}
+    <p class="muted">Gateway configured but no card available for this agent (no active MCP agent token, or gateway unreachable). Token values are never displayed.</p>
+    {% else %}
+    <p class="muted">MCP gateway integration not configured (ACMS_MCP_GATEWAY_* settings empty).</p>
+    {% endif %}
+  </div>
+  <div class="card">
     <h2>Runtime lifecycle</h2>
     {% if runtime %}
     <p><strong>Desired:</strong> <span class="status">{{ runtime.desired_state }}</span> &middot; <strong>Actual:</strong> <span class="status conn-{{ 'healthy' if runtime.actual_state == 'RUNNING' else 'unreachable' }}">{{ runtime.actual_state }}</span></p>

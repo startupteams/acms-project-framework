@@ -44,6 +44,11 @@ def _config_from_env() -> GatewayConfig:
         public_base_url=os.environ.get("MCP_GATEWAY_PUBLIC_URL", ""),
         executive_agent_names=os.environ.get("MCP_GATEWAY_EXECUTIVE_AGENTS", ""),
         allowed_hosts=os.environ.get("MCP_GATEWAY_ALLOWED_HOSTS", ""),
+        llm_base_url=os.environ.get("MCP_GATEWAY_LLM_BASE_URL", ""),
+        llm_token=os.environ.get("MCP_GATEWAY_LLM_TOKEN", ""),
+        internal_token=os.environ.get("MCP_GATEWAY_INTERNAL_TOKEN", ""),
+        approvals_path=os.environ.get("MCP_GATEWAY_APPROVALS_PATH",
+                                      "/var/lib/miam-mcp-gateway/approvals.sqlite3"),
     )
 
 
@@ -156,6 +161,30 @@ def cmd_activity(args) -> int:
     return 0
 
 
+def cmd_approval_list(args) -> int:
+    cfg = _config_from_env()
+    from .approvals import ApprovalStore
+
+    store = ApprovalStore(cfg.approvals_path)
+    rows = store.list(status=args.status, limit=args.limit)
+    print(json.dumps(rows, indent=2, default=str))
+    return 0
+
+
+def cmd_approval_decide(args) -> int:
+    cfg = _config_from_env()
+    from .approvals import ApprovalStore
+
+    store = ApprovalStore(cfg.approvals_path)
+    out = store.decide(args.request_id, decision=args.decision.upper(),
+                       decided_by=args.decided_by, note=args.note or "")
+    if out is None:
+        print(json.dumps({"request_id": args.request_id, "error": "not found"}))
+        return 1
+    print(json.dumps(out, indent=2, default=str))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="mcp_gateway", description=__doc__)
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -193,6 +222,19 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--limit", type=int, default=20)
     p.add_argument("--denied", action="store_true")
     p.set_defaults(fn=cmd_activity)
+
+    p = sub.add_parser("approval", help="approval-request operations (plan §16/§36)")
+    approval_sub = p.add_subparsers(dest="approval_cmd", required=True)
+    pl = approval_sub.add_parser("list", help="list approval requests")
+    pl.add_argument("--status", default=None, choices=["PENDING", "APPROVED", "DENIED", "USED", "EXPIRED"])
+    pl.add_argument("--limit", type=int, default=50)
+    pl.set_defaults(fn=cmd_approval_list)
+    pd = approval_sub.add_parser("decide", help="decide an approval request")
+    pd.add_argument("request_id")
+    pd.add_argument("decision", choices=["APPROVED", "DENIED"])
+    pd.add_argument("--decided-by", default="operator")
+    pd.add_argument("--note", default=None)
+    pd.set_defaults(fn=cmd_approval_decide)
 
     args = parser.parse_args(argv)
     return args.fn(args)
