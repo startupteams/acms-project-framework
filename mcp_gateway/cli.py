@@ -64,6 +64,9 @@ def _config_from_env() -> GatewayConfig:
         kuma_url=os.environ.get("MCP_GATEWAY_KUMA_URL", ""),
         kuma_user=os.environ.get("MCP_GATEWAY_KUMA_USER", ""),
         kuma_pass=os.environ.get("MCP_GATEWAY_KUMA_PASS", ""),
+        # P2 (plan P2)
+        dkms_base_url=os.environ.get("MCP_GATEWAY_DKMS_BASE_URL", ""),
+        dkms_token=os.environ.get("MCP_GATEWAY_DKMS_TOKEN", ""),
     )
 
 

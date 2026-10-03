@@ -96,7 +96,7 @@ def make_identity(kind=TokenKind.ASSIGNMENT, agent="acms-hermes-worker-uid-005",
         roles=list(roles),
         scopes=["acms.read", "acms.write", "proxmox.read", "proxmox.write",
                 "llm.read", "llm.write", "runtime.write", "github.read", "github.write",
-                "power.read"],
+                "power.read", "dkms.read", "dkms.write"],
         work_uid=work_uid if kind == TokenKind.ASSIGNMENT else None,
         repositories=["startupteams/acms-project-framework"] if kind == TokenKind.ASSIGNMENT else [],
     )
