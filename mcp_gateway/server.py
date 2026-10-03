@@ -340,7 +340,44 @@ class GatewayServer:
         self._build_jira_capabilities()
         self._build_registry_monitoring_capabilities()
         self._build_dkms_capabilities()
+        self._patch_template_matching()
         self.app = self._wrap_with_identity(self.mcp.streamable_http_app())
+
+    # ------------- SDK template-matching fix -------------
+
+    @staticmethod
+    def _patch_template_matching() -> None:
+        """SDK ResourceTemplate.matches() converts the template to a regex via a naive
+        ``{``→``(?P<`` substitution, which leaves regex-special characters (notably the
+        ``?`` of ``?q={query}`` URI query strings) UNESCAPED — ``?`` becomes a quantifier
+        and the template can never match. Fix once, globally: escape the literal parts of
+        the template before re-inserting the named groups (gateway-wide; fixes all domains)."""
+        from mcp.server.fastmcp.resources import templates as _tpl_mod
+
+        _orig = _tpl_mod.ResourceTemplate.matches
+
+        def _safe_matches(self, uri: str):
+            import re as _re
+
+            parts = _re.split(r"(\{[a-zA-Z_][a-zA-Z0-9_]*\})", self.uri_template)
+            chunks: list[str] = []
+            for p in parts:
+                m = _re.fullmatch(r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}", p)
+                if m:
+                    chunks.append("(?P<" + m.group(1) + ">[^/]+)")
+                else:
+                    chunks.append(_re.escape(p))
+            match = _re.fullmatch("".join(chunks), uri)
+            if match:
+                return match.groupdict()
+            return None
+
+        if not getattr(_tpl_mod.ResourceTemplate.matches, "_gateway_safe", False):
+            try:
+                _safe_matches._gateway_safe = True  # type: ignore[attr-defined]
+            except Exception:
+                pass
+            _tpl_mod.ResourceTemplate.matches = _safe_matches
 
     # ------------- public ASGI app (adds /health + /internal) -------------
 

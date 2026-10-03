@@ -372,3 +372,32 @@ def test_record_timeline_entry(tmp_path):
     rec = fake_dkms._created_records[0]
     assert rec["authority_class"] == "SYSTEM_OBSERVED"
     assert rec["retention_class"] == "indefinite"
+
+
+def test_template_matching_handles_query_strings():
+    """SDK ResourceTemplate.matches() breaks on '?key={var}' templates (bare ? becomes
+    a regex quantifier). GatewayServer._patch_template_matching() must fix it globally
+    (plan P2 live-found via real MCP resources/read)."""
+    from mcp.server.fastmcp.resources import templates as tpl_mod
+
+    class _Fake:
+        uri_template = "dkms://search?q={query}"
+
+    # apply the gateway patch (idempotent)
+    GatewayServer._patch_template_matching()
+    params = tpl_mod.ResourceTemplate.matches(_Fake(), "dkms://search?q=qga")
+    assert params == {"query": "qga"}
+
+    class _Fake2:
+        uri_template = "dkms://records/recent?limit={limit}"
+
+    params2 = tpl_mod.ResourceTemplate.matches(_Fake2(), "dkms://records/recent?limit=5")
+    assert params2 == {"limit": "5"}
+
+    # unchanged path-style templates still work
+    class _Fake3:
+        uri_template = "dkms://record/{uid}"
+
+    params3 = tpl_mod.ResourceTemplate.matches(
+        _Fake3(), "dkms://record/8c1a74405bcc4ed295b661dd2d0e4dce")
+    assert params3 == {"uid": "8c1a74405bcc4ed295b661dd2d0e4dce"}
