@@ -151,7 +151,7 @@ class TokenStore:
         default_scopes = ["acms.read", "acms.write", "llm.read", "llm.write",
                           "runtime.write", "proxmox.write", "power.read",
                           "jira.read", "jira.write", "registry.read",
-                          "monitoring.read"]
+                          "monitoring.read", "dkms.read", "dkms.write"]
         rec = AgentTokenRecord(
             token_hash=_hash(raw),
             agent_name=agent_name,
