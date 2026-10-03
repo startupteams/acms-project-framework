@@ -35,6 +35,7 @@ from .errors import (
     GatewayErrorType,
     NotFoundError,
     OutOfScopeError,
+    QuarantinedContentError,
     RevokedAgentTokenError,
     RoleRequiredError,
     UnauthenticatedError,
@@ -47,6 +48,7 @@ from .proxmox_adapter import SandboxClient, sandbox_name
 from .power_adapter import PowerClient
 from .jira_adapter import JiraMcpClient, WORKER_ALLOWED_TRANSITIONS
 from .registry_adapter import MonitoringClient, RegistryClient
+from .dkms_adapter import DkmsClient
 from .manifest import build_context_manifest
 from .models import (
     AuditEntry,
@@ -116,6 +118,9 @@ class GatewayConfig:
     kuma_url: str = ""                # e.g. http://127.0.0.1:3001 (on VM119) / http://10.0.20.172:3001
     kuma_user: str = ""
     kuma_pass: str = ""
+    # ---- P2 (plan P2) ----
+    dkms_base_url: str = ""           # e.g. http://10.0.20.190:30800
+    dkms_token: str = ""              # gateway's DKMS credential (env-injected)
 
 
 def _parse_list(raw: str) -> list[str]:
@@ -240,6 +245,7 @@ class GatewayServer:
                  jira_client: "JiraMcpClient | None" = None,
                  registry_client: "RegistryClient | None" = None,
                  monitoring_client: "MonitoringClient | None" = None,
+                 dkms_client: "DkmsClient | None" = None,
                  approvals: ApprovalStore | None = None):
         self.config = config
         self.tokens = tokens
@@ -296,6 +302,11 @@ class GatewayServer:
             MonitoringClient(config.kuma_url, config.kuma_user, config.kuma_pass)
             if (config.kuma_url and config.kuma_user and config.kuma_pass) else None
         )
+        # P2 (plan P2): dkms.* rides its own REST endpoint (VM117 NodePort)
+        self.dkms = dkms_client or (
+            DkmsClient(config.dkms_base_url, config.dkms_token)
+            if (config.dkms_base_url and config.dkms_token) else None
+        )
         self.internal = InternalApi(tokens=tokens, audit=audit, approvals=self.approvals,
                                     internal_token=config.internal_token)
         self.executive_names = set(_parse_list(config.executive_agent_names))
@@ -312,7 +323,7 @@ class GatewayServer:
             instructions=(
                 "MIAM internal MCP gateway. Internal Startup Teams agents only. "
                 "Auth via Bearer agent/assignment token on every request. "
-                "Domains: acms.* in W1; llm/runtime/github/proxmox/pdu/power/jira/registry later."
+                "Domains: acms.*, llm/runtime/github/proxmox/pdu/power/jira/registry/dkms."
             ),
             stateless_http=True,
             json_response=True,
@@ -328,6 +339,7 @@ class GatewayServer:
         self._build_power_capabilities()
         self._build_jira_capabilities()
         self._build_registry_monitoring_capabilities()
+        self._build_dkms_capabilities()
         self.app = self._wrap_with_identity(self.mcp.streamable_http_app())
 
     # ------------- public ASGI app (adds /health + /internal) -------------
@@ -353,7 +365,8 @@ class GatewayServer:
                                    + (["power"] if outer_app.power else [])
                                    + (["jira"] if outer_app.jira else [])
                                    + (["registry"] if outer_app.svc_registry else [])
-                                   + (["monitoring"] if outer_app.kuma else []),
+                                   + (["monitoring"] if outer_app.kuma else [])
+                                   + (["dkms"] if outer_app.dkms else []),
                     }).encode()
                     await send({
                         "type": "http.response.start",
@@ -2791,6 +2804,561 @@ class GatewayServer:
             _register_rm_resource(
                 "monitoring.incidents", "monitoring://incidents", r_incidents,
                 "Down/disabled monitors (incident view; read-only).")
+
+    # ------------- P2: dkms.* capability construction (plan P2) -------------
+
+    def _build_dkms_capabilities(self) -> None:
+        """dkms.* resources + worker tools (plan P2).
+
+        DKMS service (VM117 K3s NodePort) stores knowledge records. Workers can
+        ingest plans, handoffs, timeline entries, failures, lessons, decisions.
+        dkms.record_lesson has NO own_work requirement (STEA direct write path).
+        dkms.mark_training_eligibility is executive/infrastructure_admin only.
+        Secret-like content → 422 QUARANTINED (no retry, surface honestly).
+        """
+        dkms = self.dkms
+        acms = self.acms
+        if dkms is None:
+            return  # dkms domain absent when env unconfigured (health omits it)
+
+        def _require_dkms():
+            if self.dkms is None:
+                raise DomainUnavailableError(
+                    "dkms domain not configured (DKMS_BASE_URL/TOKEN missing)")
+            return self.dkms
+
+        # ---- resources (READ) ----
+
+        def r_record_get(identity, uri_params):
+            uid = (uri_params or {}).get("uid") or ""
+            if not uid:
+                raise ValidationError_("uid is required")
+            return {"record": _require_dkms().get_record(uid)}
+
+        def r_list_recent(identity, uri_params):
+            limit = (uri_params or {}).get("limit") or "20"
+            try:
+                limit = int(limit)
+            except ValueError:
+                limit = 20
+            limit = max(1, min(200, limit))
+            return {"records": _require_dkms().list_records({"limit": limit})}
+
+        def r_search(identity, uri_params):
+            query = (uri_params or {}).get("query") or (uri_params or {}).get("q") or ""
+            if not query:
+                raise ValidationError_("query is required")
+            return {"results": _require_dkms().search(query)}
+
+        def r_record_related(identity, uri_params):
+            uid = (uri_params or {}).get("uid") or ""
+            if not uid:
+                raise ValidationError_("uid is required")
+            return {"related": _require_dkms().related(uid)}
+
+        def r_export_markdown(identity, uri_params):
+            work_uid = (uri_params or {}).get("work_uid") or ""
+            query = {"work_uid": work_uid} if work_uid else {}
+            content = _require_dkms().export_markdown(query)
+            return {"markdown": content, "work_uid": work_uid or "(all)"}
+
+        def r_audit_recent(identity, uri_params):
+            events = _require_dkms().audit()
+            return {"events": events[:50]}
+
+        def _register_dkms_resource(name, uri, resolver, description, *, roles=None):
+            cap = Capability(
+                name=name, domain="dkms", risk=RiskClass.READ,
+                roles=roles if roles is not None else {
+                    "worker", "reviewer", "project_manager", "executive",
+                    "infrastructure_admin", "observer"},
+                scopes={"dkms.read"},
+                description=description, kind="resource", uri_template=uri,
+            )
+            from mcp.server.fastmcp.resources.templates import FunctionResource
+            if _TEMPLATE_PARAM_SEARCH.search(uri) is None:
+                def _static_resolver(identity):
+                    return resolver(identity, {})
+                cap.handler = lambda ident, ctx=None, _r=_static_resolver: _async_result(_r(ident))
+
+                async def _static():
+                    identity = CURRENT_IDENTITY.get()
+                    entry = AuditEntry(
+                        agent_name=identity.agent_name if identity else "(none)",
+                        token_id=identity.token_id if identity else "",
+                        token_kind=identity.token_kind.value if identity else "agent",
+                        work_uid=getattr(identity, "work_uid", None),
+                        domain=cap.domain, name=cap.name, entry_kind="resource",
+                        risk_class=cap.risk, status="ok",
+                    )
+                    start = time.monotonic()
+                    try:
+                        if identity is None:
+                            raise UnauthenticatedError("no identity bound")
+                        cap.authorize(identity)
+                        result = _static_resolver(identity)
+                        entry.duration_ms = int((time.monotonic() - start) * 1000)
+                        self.audit.record(entry)
+                        return result
+                    except GatewayError as exc:
+                        entry.duration_ms = int((time.monotonic() - start) * 1000)
+                        entry.status = "denied" if exc.error_type in {
+                            GatewayErrorType.ROLE_REQUIRED,
+                            GatewayErrorType.SCOPE_REQUIRED,
+                            GatewayErrorType.OUT_OF_SCOPE,
+                            GatewayErrorType.DESTRUCTIVE_DENY,
+                            GatewayErrorType.APPROVAL_REQUIRED,
+                            GatewayErrorType.QUARANTINED} else "error"
+                        entry.error_type = exc.error_type.value
+                        entry.detail = exc.detail
+                        self.audit.record(entry)
+                        exc.args = (f"{exc.error_type.value}: {exc.detail}",)
+                        raise
+                self.mcp._resource_manager.add_resource(
+                    FunctionResource.from_function(_static, uri=uri, name=dotted(name),
+                                                   description=description,
+                                                   mime_type="application/json"))
+            else:
+                async def tpl_fn(**kwargs):
+                    kwargs = {k: urllib.parse.unquote(v) for k, v in kwargs.items()}
+                    identity = CURRENT_IDENTITY.get()
+                    entry = AuditEntry(
+                        agent_name=identity.agent_name if identity else "(none)",
+                        token_id=identity.token_id if identity else "",
+                        token_kind=identity.token_kind.value if identity else "agent",
+                        work_uid=getattr(identity, "work_uid", None),
+                        domain=cap.domain, name=cap.name, entry_kind="resource",
+                        risk_class=cap.risk, status="ok",
+                        args_hash=hash_args(kwargs),
+                    )
+                    start = time.monotonic()
+                    try:
+                        if identity is None:
+                            raise UnauthenticatedError("no identity bound")
+                        cap.authorize(identity)
+                        result = resolver(identity, kwargs)
+                        entry.duration_ms = int((time.monotonic() - start) * 1000)
+                        self.audit.record(entry)
+                        return result
+                    except GatewayError as exc:
+                        entry.duration_ms = int((time.monotonic() - start) * 1000)
+                        entry.status = "denied" if exc.error_type in {
+                            GatewayErrorType.ROLE_REQUIRED,
+                            GatewayErrorType.SCOPE_REQUIRED,
+                            GatewayErrorType.OUT_OF_SCOPE,
+                            GatewayErrorType.DESTRUCTIVE_DENY,
+                            GatewayErrorType.APPROVAL_REQUIRED,
+                            GatewayErrorType.QUARANTINED} else "error"
+                        entry.error_type = exc.error_type.value
+                        entry.detail = exc.detail
+                        self.audit.record(entry)
+                        exc.args = (f"{exc.error_type.value}: {exc.detail}",)
+                        raise
+                self.mcp._resource_manager.add_template(
+                    tpl_fn, uri_template=uri, name=dotted(name),
+                    description=description, mime_type="application/json")
+            if _TEMPLATE_PARAM_SEARCH.search(uri) is None:
+                async def _direct_static(identity, params=None, _r=_static_resolver, _cap=cap):
+                    _cap.authorize(identity)
+                    return _r(identity)
+                cap.handler = _direct_static
+            else:
+                async def _direct_tpl(identity, params=None, _resolver=resolver, _cap=cap):
+                    _cap.authorize(identity)
+                    return _resolver(identity, {k: urllib.parse.unquote(v) for k, v in (params or {}).items()})
+                cap.handler = _direct_tpl
+            self.registry.register(cap)
+
+        _register_dkms_resource(
+            "dkms.record.get", "dkms://record/{uid}", r_record_get,
+            "Read one DKMS record by UID (knowledge_uid).")
+        _register_dkms_resource(
+            "dkms.list.recent", "dkms://records/recent?limit={limit}", r_list_recent,
+            "List recent DKMS records (default limit 20, max 200).")
+        _register_dkms_resource(
+            "dkms.search", "dkms://search?q={query}", r_search,
+            "Full-text/metadata search across DKMS records.")
+        _register_dkms_resource(
+            "dkms.record.related", "dkms://record/{uid}/related", r_record_related,
+            "Typed-link traversal for one DKMS record.")
+        _register_dkms_resource(
+            "dkms.export.markdown", "dkms://export/markdown?work_uid={work_uid}", r_export_markdown,
+            "Export DKMS records as a Markdown bundle (work_uid optional).")
+        _register_dkms_resource(
+            "dkms.audit.recent", "dkms://audit/recent", r_audit_recent,
+            "Recent DKMS audit events (bounded to 50).")
+
+        # ---- tools ----
+
+        def _dkms_tool(name, desc, schema, fn, risk, *, roles=None, scopes=None):
+            wrapped = _bind_args(fn)
+            cap = Capability(
+                name=name, domain="dkms", risk=risk,
+                roles=roles if roles is not None else {
+                    "worker", "reviewer", "project_manager", "executive",
+                    "infrastructure_admin"},
+                scopes=scopes if scopes is not None else {"dkms.write"},
+                description=desc, timeout_seconds=30, side_effect="external",
+                meta={"input_schema": schema},
+            )
+            cap.handler = wrapped
+            self._register_tool(cap)
+
+        async def ingest_plan(identity, ctx, title: str, body_markdown: str,
+                              source_uri: str, source_uid: str,
+                              work_uid: str = "", jira_key: str = "",
+                              project_uid: str = "", repository: str = "",
+                              commit_sha: str = ""):
+            if not title or not body_markdown or not source_uri or not source_uid:
+                raise ValidationError_("title, body_markdown, source_uri, source_uid are required")
+            payload = {
+                "record_type": "plan",
+                "title": title,
+                "body_markdown": body_markdown,
+                "source_kind": "instruction_plan",
+                "source_uri": source_uri,
+                "source_uid": source_uid,
+                "authority_class": "HUMAN_APPROVED",
+                "retention_class": "standard-90d",
+            }
+            if work_uid:
+                payload["work_uid"] = work_uid
+            if jira_key:
+                payload["jira_key"] = jira_key
+            if project_uid:
+                payload["project_uid"] = project_uid
+            if repository:
+                payload["repository"] = repository
+            if commit_sha:
+                payload["commit_sha"] = commit_sha
+            rec = _require_dkms().create_record(payload)
+            return {"knowledge_uid": rec.get("knowledge_uid"),
+                    "record_type": "plan",
+                    "authority_class": "HUMAN_APPROVED"}
+
+        async def ingest_handoff(identity, ctx, title: str, body_markdown: str,
+                                 source_uri: str, source_uid: str,
+                                 work_uid: str = "", jira_key: str = "",
+                                 agent_uid: str = "", session_uid: str = ""):
+            if not title or not body_markdown or not source_uri or not source_uid:
+                raise ValidationError_("title, body_markdown, source_uri, source_uid are required")
+            # create handoff-source first
+            source_payload = {
+                "record_type": "raw-transcript",
+                "title": f"[source] {title}",
+                "body_markdown": body_markdown,
+                "source_kind": "handoff_source",
+                "source_uri": source_uri,
+                "source_uid": source_uid,
+                "authority_class": "SYSTEM_OBSERVED",
+                "retention_class": "standard-90d",
+                "sensitivity_class": "internal",
+            }
+            if work_uid:
+                source_payload["work_uid"] = work_uid
+            if jira_key:
+                source_payload["jira_key"] = jira_key
+            if agent_uid:
+                source_payload["agent_uid"] = agent_uid
+            if session_uid:
+                source_payload["session_uid"] = session_uid
+            source_rec = _require_dkms().create_record(source_payload)
+            source_uid_created = source_rec.get("knowledge_uid")
+            # create handoff-summary
+            summary_payload = {
+                "record_type": "handoff-summary",
+                "title": title,
+                "body_markdown": body_markdown,
+                "source_kind": "handoff_summary",
+                "source_uri": source_uri,
+                "source_uid": source_uid,
+                "authority_class": "DERIVED_SUMMARY",
+                "retention_class": "indefinite",
+            }
+            if work_uid:
+                summary_payload["work_uid"] = work_uid
+            if jira_key:
+                summary_payload["jira_key"] = jira_key
+            if agent_uid:
+                summary_payload["agent_uid"] = agent_uid
+            if session_uid:
+                summary_payload["session_uid"] = session_uid
+            summary_rec = _require_dkms().create_record(summary_payload)
+            summary_uid_created = summary_rec.get("knowledge_uid")
+            # create summarizes link from summary to source
+            _require_dkms().create_link({
+                "link_type": "summarizes",
+                "from_uid": summary_uid_created,
+                "to_uid": source_uid_created,
+            })
+            return {"source_uid": source_uid_created,
+                    "summary_uid": summary_uid_created,
+                    "link_type": "summarizes"}
+
+        async def record_timeline_entry(identity, ctx, title: str, body_markdown: str,
+                                        source_uid: str, work_uid: str = "",
+                                        jira_key: str = ""):
+            if not title or not body_markdown or not source_uid:
+                raise ValidationError_("title, body_markdown, source_uid are required")
+            payload = {
+                "record_type": "implementation",
+                "title": title,
+                "body_markdown": body_markdown,
+                "source_kind": "timeline_entry",
+                "source_uid": source_uid,
+                "authority_class": "SYSTEM_OBSERVED",
+                "retention_class": "indefinite",
+            }
+            if work_uid:
+                payload["work_uid"] = work_uid
+            if jira_key:
+                payload["jira_key"] = jira_key
+            rec = _require_dkms().create_record(payload)
+            return {"knowledge_uid": rec.get("knowledge_uid"),
+                    "record_type": "implementation"}
+
+        async def record_failure(identity, ctx, title: str, failure_signature: str,
+                                 failure_class: str, system: str, symptoms: str,
+                                 evidence: str, work_uid: str = "", jira_key: str = "",
+                                 agent_uid: str = "", session_uid: str = ""):
+            if not title or not failure_signature or not failure_class or not system or not symptoms or not evidence:
+                raise ValidationError_(
+                    "title, failure_signature, failure_class, system, symptoms, evidence are required")
+            payload = {
+                "title": title,
+                "failure_signature": failure_signature,
+                "failure_class": failure_class,
+                "system": system,
+                "symptoms": symptoms,
+                "evidence": evidence,
+            }
+            if work_uid:
+                payload["work_uid"] = work_uid
+            if jira_key:
+                payload["jira_key"] = jira_key
+            if agent_uid:
+                payload["agent_uid"] = agent_uid
+            if session_uid:
+                payload["session_uid"] = session_uid
+            rec = _require_dkms().create_failure(payload)
+            return {"failure_uid": rec.get("failure_uid") or rec.get("uid"),
+                    "recorded": True}
+
+        async def record_recovery_attempt(identity, ctx, failure_uid: str, method: str,
+                                          result: str, attempt_number: int,
+                                          side_effects: str = "",
+                                          time_to_recovery_seconds: int | None = None,
+                                          root_cause: str = "", notes: str = ""):
+            if not failure_uid or not method or not result:
+                raise ValidationError_("failure_uid, method, result, attempt_number are required")
+            payload = {
+                "method": method,
+                "result": result,
+                "attempt_number": int(attempt_number),
+            }
+            if side_effects:
+                payload["side_effects"] = side_effects
+            if time_to_recovery_seconds is not None:
+                payload["time_to_recovery_seconds"] = int(time_to_recovery_seconds)
+            if root_cause:
+                payload["root_cause"] = root_cause
+            if notes:
+                payload["notes"] = notes
+            rec = _require_dkms().create_recovery_attempt(failure_uid, payload)
+            return {"failure_uid": failure_uid,
+                    "attempt_uid": rec.get("attempt_uid") or rec.get("uid"),
+                    "recorded": True}
+
+        async def record_lesson(identity, ctx, title: str, body_markdown: str,
+                                source_uri: str, source_uid: str,
+                                work_uid: str = "", jira_key: str = "",
+                                agent_uid: str = ""):
+            # NO own_work requirement — STEA direct write path; identity provenance
+            if not title or not body_markdown or not source_uri or not source_uid:
+                raise ValidationError_("title, body_markdown, source_uri, source_uid are required")
+            payload = {
+                "record_type": "lesson_learned",
+                "title": title,
+                "body_markdown": body_markdown,
+                "source_kind": "lesson",
+                "source_uri": source_uri,
+                "source_uid": source_uid,
+                "authority_class": "AGENT_INFERRED",
+                "retention_class": "indefinite",
+            }
+            if work_uid:
+                payload["work_uid"] = work_uid
+            if jira_key:
+                payload["jira_key"] = jira_key
+            # agent_uid from identity if not provided
+            actual_agent_uid = agent_uid or identity.acms_agent_id or ""
+            if actual_agent_uid:
+                payload["agent_uid"] = actual_agent_uid
+            rec = _require_dkms().create_record(payload)
+            return {"knowledge_uid": rec.get("knowledge_uid"),
+                    "record_type": "lesson_learned",
+                    "agent_uid": actual_agent_uid}
+
+        async def record_decision(identity, ctx, title: str, body_markdown: str,
+                                  source_uri: str, source_uid: str,
+                                  work_uid: str = ""):
+            if not title or not body_markdown or not source_uri or not source_uid:
+                raise ValidationError_("title, body_markdown, source_uri, source_uid are required")
+            payload = {
+                "record_type": "decision",
+                "title": title,
+                "body_markdown": body_markdown,
+                "source_kind": "decision",
+                "source_uri": source_uri,
+                "source_uid": source_uid,
+                "authority_class": "AGENT_INFERRED",
+                "retention_class": "indefinite",
+            }
+            if work_uid:
+                payload["work_uid"] = work_uid
+            rec = _require_dkms().create_record(payload)
+            return {"knowledge_uid": rec.get("knowledge_uid"),
+                    "record_type": "decision"}
+
+        async def mark_training_eligibility(identity, ctx, uid: str,
+                                            training_eligibility: str,
+                                            training_approval_mode: str,
+                                            reason: str,
+                                            training_review_state: str = ""):
+            if not uid or not training_eligibility or not training_approval_mode or not reason:
+                raise ValidationError_(
+                    "uid, training_eligibility, training_approval_mode, reason are required")
+            if training_eligibility not in ("approved", "review_required", "denied"):
+                raise ValidationError_(
+                    "training_eligibility must be approved|review_required|denied")
+            if training_approval_mode not in ("auto_policy", "human"):
+                raise ValidationError_("training_approval_mode must be auto_policy|human")
+            payload = {
+                "training_eligibility": training_eligibility,
+                "training_approval_mode": training_approval_mode,
+                "reason": reason,
+            }
+            if training_review_state:
+                if training_review_state not in ("not_reviewed", "reviewed"):
+                    raise ValidationError_(
+                        "training_review_state must be not_reviewed|reviewed")
+                payload["training_review_state"] = training_review_state
+            rec = _require_dkms().set_training_eligibility(uid, payload)
+            return {"uid": uid,
+                    "training_eligibility": training_eligibility,
+                    "updated": True}
+
+        _dkms_tool("dkms.ingest_plan",
+                   "Ingest a plan record (HUMAN_APPROVED authority, standard-90d retention).",
+                   {"type": "object",
+                    "properties": {
+                        "title": {"type": "string", "minLength": 1},
+                        "body_markdown": {"type": "string", "minLength": 1},
+                        "source_uri": {"type": "string", "minLength": 1},
+                        "source_uid": {"type": "string", "minLength": 1},
+                        "work_uid": {"type": "string"},
+                        "jira_key": {"type": "string"},
+                        "project_uid": {"type": "string"},
+                        "repository": {"type": "string"},
+                        "commit_sha": {"type": "string"}},
+                    "required": ["title", "body_markdown", "source_uri", "source_uid"]},
+                   ingest_plan, RiskClass.SAFE_WRITE)
+        _dkms_tool("dkms.ingest_handoff",
+                   "Ingest handoff: creates handoff-source + handoff-summary + summarizes link.",
+                   {"type": "object",
+                    "properties": {
+                        "title": {"type": "string", "minLength": 1},
+                        "body_markdown": {"type": "string", "minLength": 1},
+                        "source_uri": {"type": "string", "minLength": 1},
+                        "source_uid": {"type": "string", "minLength": 1},
+                        "work_uid": {"type": "string"},
+                        "jira_key": {"type": "string"},
+                        "agent_uid": {"type": "string"},
+                        "session_uid": {"type": "string"}},
+                    "required": ["title", "body_markdown", "source_uri", "source_uid"]},
+                   ingest_handoff, RiskClass.SAFE_WRITE)
+        _dkms_tool("dkms.record_timeline_entry",
+                   "Record an implementation timeline entry (SYSTEM_OBSERVED, indefinite retention).",
+                   {"type": "object",
+                    "properties": {
+                        "title": {"type": "string", "minLength": 1},
+                        "body_markdown": {"type": "string", "minLength": 1},
+                        "source_uid": {"type": "string", "minLength": 1},
+                        "work_uid": {"type": "string"},
+                        "jira_key": {"type": "string"}},
+                    "required": ["title", "body_markdown", "source_uid"]},
+                   record_timeline_entry, RiskClass.SAFE_WRITE)
+        _dkms_tool("dkms.record_failure",
+                   "Record a failure event for post-incident analysis.",
+                   {"type": "object",
+                    "properties": {
+                        "title": {"type": "string", "minLength": 1},
+                        "failure_signature": {"type": "string", "minLength": 1},
+                        "failure_class": {"type": "string", "minLength": 1},
+                        "system": {"type": "string", "minLength": 1},
+                        "symptoms": {"type": "string", "minLength": 1},
+                        "evidence": {"type": "string", "minLength": 1},
+                        "work_uid": {"type": "string"},
+                        "jira_key": {"type": "string"},
+                        "agent_uid": {"type": "string"},
+                        "session_uid": {"type": "string"}},
+                    "required": ["title", "failure_signature", "failure_class",
+                                 "system", "symptoms", "evidence"]},
+                   record_failure, RiskClass.SAFE_WRITE)
+        _dkms_tool("dkms.record_recovery_attempt",
+                   "Attach a recovery attempt to an existing failure.",
+                   {"type": "object",
+                    "properties": {
+                        "failure_uid": {"type": "string", "minLength": 1},
+                        "method": {"type": "string", "minLength": 1},
+                        "result": {"type": "string", "minLength": 1},
+                        "attempt_number": {"type": "integer", "minimum": 1},
+                        "side_effects": {"type": "string"},
+                        "time_to_recovery_seconds": {"type": "integer"},
+                        "root_cause": {"type": "string"},
+                        "notes": {"type": "string"}},
+                    "required": ["failure_uid", "method", "result", "attempt_number"]},
+                   record_recovery_attempt, RiskClass.SAFE_WRITE)
+        _dkms_tool("dkms.record_lesson",
+                   "Record a lesson learned (NO own_work requirement — STEA direct write path; "
+                   "agent_uid stamped from identity).",
+                   {"type": "object",
+                    "properties": {
+                        "title": {"type": "string", "minLength": 1},
+                        "body_markdown": {"type": "string", "minLength": 1},
+                        "source_uri": {"type": "string", "minLength": 1},
+                        "source_uid": {"type": "string", "minLength": 1},
+                        "work_uid": {"type": "string"},
+                        "jira_key": {"type": "string"},
+                        "agent_uid": {"type": "string"}},
+                    "required": ["title", "body_markdown", "source_uri", "source_uid"]},
+                   record_lesson, RiskClass.SAFE_WRITE)
+        _dkms_tool("dkms.record_decision",
+                   "Record an architectural or implementation decision (AGENT_INFERRED, indefinite).",
+                   {"type": "object",
+                    "properties": {
+                        "title": {"type": "string", "minLength": 1},
+                        "body_markdown": {"type": "string", "minLength": 1},
+                        "source_uri": {"type": "string", "minLength": 1},
+                        "source_uid": {"type": "string", "minLength": 1},
+                        "work_uid": {"type": "string"}},
+                    "required": ["title", "body_markdown", "source_uri", "source_uid"]},
+                   record_decision, RiskClass.SAFE_WRITE)
+        _dkms_tool("dkms.mark_training_eligibility",
+                   "Mark a record's training eligibility (executive/infrastructure_admin only).",
+                   {"type": "object",
+                    "properties": {
+                        "uid": {"type": "string", "minLength": 1},
+                        "training_eligibility": {"type": "string",
+                                                 "enum": ["approved", "review_required", "denied"]},
+                        "training_approval_mode": {"type": "string",
+                                                   "enum": ["auto_policy", "human"]},
+                        "reason": {"type": "string", "minLength": 1},
+                        "training_review_state": {"type": "string",
+                                                  "enum": ["not_reviewed", "reviewed"]}},
+                    "required": ["uid", "training_eligibility", "training_approval_mode", "reason"]},
+                   mark_training_eligibility, RiskClass.SAFE_WRITE,
+                   roles={"executive", "infrastructure_admin"})
 
 # ---------------- argument plumbing helpers ----------------
 

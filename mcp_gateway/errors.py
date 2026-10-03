@@ -26,6 +26,7 @@ class GatewayErrorType(StrEnum):
     DOMAIN_UNAVAILABLE = "DOMAIN_UNAVAILABLE"
     VALIDATION = "VALIDATION"
     CONFLICT = "CONFLICT"
+    QUARANTINED = "QUARANTINED"
     INTERNAL = "INTERNAL"
 
 
@@ -98,3 +99,8 @@ class ValidationError_(GatewayError):
 
 class ConflictError(GatewayError):
     error_type = GatewayErrorType.CONFLICT
+
+
+class QuarantinedContentError(GatewayError):
+    """Secret-like content detected in record body — no retry or sanitization."""
+    error_type = GatewayErrorType.QUARANTINED
